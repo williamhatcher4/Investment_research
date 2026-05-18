@@ -1,0 +1,32 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.DS_Store
+.idea/
+.vscode/
+.claude/
+
+# Local research vault — Bloomberg/FactSet data is proprietary.
+# Treat raw exports and parsed derivatives as private; only human-written
+# content (NKE.md, memos/, notes/, Watchlists/) is safe to track.
+data/
+*.sqlite
+*.sqlite-journal
+
+# Per-company artifacts — gitignored wherever VAULT_ROOT lives.
+**/bloomberg_exports/
+**/parsed/
+
+# Sample Bloomberg/FactSet workbook used for local development only.
+CompanyHistoryBBV2 - *.xlsx
