@@ -1,5 +1,8 @@
 # investor-research MCP
 
+[![tests](https://github.com/williamhatcher4/Investment_research/actions/workflows/tests.yml/badge.svg)](https://github.com/williamhatcher4/Investment_research/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A production-quality [Model Context Protocol](https://modelcontextprotocol.io/)
 server that connects Claude Desktop to live equity research tools. Supports
 two interchangeable research backends — **Tavily** (default, cheaper) and
@@ -165,7 +168,7 @@ Add the server to your Claude Desktop MCP config
 }
 ```
 
-Use **absolute paths**. Restart Claude Desktop. The six tools should
+Use **absolute paths**. Restart Claude Desktop. All 17 tools should
 appear in the tool picker.
 
 ---
@@ -342,6 +345,8 @@ investor-research-mcp/
 ├── .env.example
 ├── requirements.txt
 ├── requirements-dev.txt
+├── .github/workflows/tests.yml          # CI: pytest + tool-registration smoke test
+├── LICENSE
 └── README.md
 ```
 
@@ -403,3 +408,10 @@ Phases 1, 2, and 3 complete. 17 tools wired:
   round-trip. Existing Phase 1/2 tools auto-merge parsed vault fundamentals
   when present and `build_investment_memo` anchors valuation on the user's
   own DCF rather than re-deriving from the web.
+
+---
+
+## License
+
+[MIT](LICENSE). Bloomberg/FactSet data you import is subject to your own
+vendor terms and is not covered by this license.

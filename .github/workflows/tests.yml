@@ -1,0 +1,29 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Run tests
+        run: pytest -q
+      - name: Smoke-test server tool registration
+        env:
+          TAVILY_API_KEY: dummy-ci-key
+        run: |
+          python -c "import asyncio, server; tools = asyncio.run(server.mcp.list_tools()); assert len(tools) == 17, len(tools); print([t.name for t in tools])"
