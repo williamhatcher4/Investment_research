@@ -147,3 +147,67 @@ def test_list_company_memos_tool(monkeypatch, settings_with_vault) -> None:
     assert out["ok"] is True
     assert out["count"] == 2
     assert out["memos"][0]["date"] == "2026-05-18"
+
+
+def test_screen_and_compare_vault_metrics(
+    monkeypatch, settings_with_vault, tmp_path: Path
+) -> None:
+    _patch_settings(monkeypatch, settings_with_vault)
+    src = tmp_path / "msft.xlsx"
+    _build_minimal_workbook(src)
+    vault_tools.import_xlsx_export("MSFT", str(src))
+
+    screen = vault_tools.screen_vault_companies("revenue", min_value=230000)
+    assert screen["ok"] is True
+    assert screen["rows"][0]["ticker"] == "MSFT"
+    assert screen["rows"][0]["period"] == "FY2025"
+
+    # FY2024 (220,000) passes max_value but the latest year (240,000) does not,
+    # so MSFT must not appear: screens apply to each company's latest value.
+    capped = vault_tools.screen_vault_companies("revenue", max_value=230000)
+    assert capped["rows"] == []
+
+    comp = vault_tools.compare_vault_metrics(["MSFT"], ["revenue"], recent_periods=2)
+    assert comp["rows"][0]["metrics"]["revenue"]["values"] == [220000.0, 240000.0]
+
+
+def test_vault_dashboard_and_memo_compare(monkeypatch, settings_with_vault) -> None:
+    _patch_settings(monkeypatch, settings_with_vault)
+    vault_tools.write_memo_to_vault_tool(
+        "NKE", "# Old Memo\n\nVerdict: WATCH.", date="2026-01-01"
+    )
+    vault_tools.write_memo_to_vault_tool(
+        "NKE", "# New Memo\n\nVerdict: CONSIDER.", date="2026-05-18"
+    )
+
+    dashboard = vault_tools.vault_dashboard()
+    assert dashboard["ok"] is True
+    assert dashboard["companies"][0]["latest_memo"]["date"] == "2026-05-18"
+
+    diff = vault_tools.compare_to_last_memo_tool("NKE", new_evidence_summary="Margins improved.")
+    assert diff["has_prior_memo"] is True
+    assert "CONSIDER" in diff["latest_memo_excerpt"]
+    assert "Margins improved" in diff["new_evidence_summary"]
+
+
+def test_peer_set_round_trip(monkeypatch, settings_with_vault) -> None:
+    _patch_settings(monkeypatch, settings_with_vault)
+    saved = vault_tools.write_peer_set_tool(
+        "sportswear", ["NKE", "ADDYY"], description="Athletic brands"
+    )
+    assert saved["ok"] is True
+    listed = vault_tools.list_peer_sets_tool()
+    assert listed["peer_sets"]["sportswear"]["tickers"] == ["NKE", "ADDYY"]
+    loaded = vault_tools.load_peer_set_tool("sportswear")
+    assert loaded["tickers"] == ["NKE", "ADDYY"]
+
+
+def test_write_peer_set_refuses_to_overwrite_corrupt_file(monkeypatch, settings_with_vault) -> None:
+    _patch_settings(monkeypatch, settings_with_vault)
+    vault_tools.write_peer_set_tool("sportswear", ["NKE"])
+    path = vault_tools._peer_sets_path(settings_with_vault)
+    path.write_text("sportswear: [unclosed\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="peer_sets.yml"):
+        vault_tools.write_peer_set_tool("software", ["MSFT"])
+    assert path.read_text(encoding="utf-8") == "sportswear: [unclosed\n"

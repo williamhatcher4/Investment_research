@@ -21,6 +21,7 @@ from tenacity import (
 
 from investor_research.config import Settings
 from investor_research.models import ResearchEvidence, ResearchResult, Source
+from investor_research.source_quality import enrich_source
 
 logger = logging.getLogger(__name__)
 
@@ -114,10 +115,12 @@ def _to_evidence(query: str, raw: dict[str, Any]) -> ResearchEvidence:
         )
         if url not in seen_urls:
             sources.append(
-                Source(
-                    url=url,
-                    title=entry.get("title"),
-                    publisher=_publisher_from_url(url),
+                enrich_source(
+                    Source(
+                        url=url,
+                        title=entry.get("title"),
+                        publisher=_publisher_from_url(url),
+                    )
                 )
             )
             seen_urls.add(url)

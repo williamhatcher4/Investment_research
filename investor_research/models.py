@@ -29,6 +29,10 @@ class Source(BaseModel):
     url: str
     title: str | None = None
     publisher: str | None = None
+    source_type: str | None = None
+    quality_tier: str | None = None
+    quality_score: float | None = None
+    quality_notes: str | None = None
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -373,6 +377,10 @@ class FundamentalsSnapshot(BaseModel):
             url=f"file://{self.source_file}",
             title=f"User vault — parsed xlsx for {self.ticker}",
             publisher="Local vault",
+            source_type="user_vault",
+            quality_tier="primary_user_data",
+            quality_score=0.95,
+            quality_notes="User-imported Bloomberg/FactSet workbook parsed into the local vault.",
         )
 
 
@@ -390,3 +398,38 @@ class VaultCompany(BaseModel):
     last_updated: str | None = None
     has_parsed: bool = False
     has_exports: bool = False
+
+
+# ---------- Vault: multi-company watchlist scorecard --------------------
+
+
+class WatchlistRow(BaseModel):
+    """One company's row in a watchlist scorecard workbook."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    bloomberg_ticker: str
+    normalized_ticker: str | None = None
+    long_name: str | None = None
+    sector: str | None = None
+    price: float | None = None
+    intrinsic_value: float | None = None
+    margin_of_safety: float | None = None
+    metrics: dict[str, float | None] = Field(default_factory=dict)
+    ratings: dict[str, str | None] = Field(default_factory=dict)
+    raw_columns: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class WatchlistSnapshot(BaseModel):
+    """Parsed multi-company scorecard workbook."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    source_file: str | None = None
+    source_sha256: str | None = None
+    sheet_name: str
+    snapshot_date: str | None = None
+    parsed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    rows: list[WatchlistRow] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)

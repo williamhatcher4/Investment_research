@@ -61,3 +61,12 @@ VALUATION_PEERS_QUERY = (
     "EV/EBITDA, and FCF yield? Is the multiple justified by growth, "
     "margins, and balance sheet relative to peers?"
 )
+
+FOLLOW_UP_QUERY = (
+    "Follow-up investment research question for {ticker}: {question}\n\n"
+    "Answer by gathering fresh evidence. Prefer primary sources such as SEC "
+    "filings, company investor relations materials, earnings releases, "
+    "earnings transcripts, and reputable financial publications. Return "
+    "evidence that can support Claude's downstream answer; do not rely only "
+    "on prior conversation context."
+)

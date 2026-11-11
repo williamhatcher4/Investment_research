@@ -35,6 +35,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from investor_research.models import FundamentalsSnapshot
 from investor_research.tickers import validate_ticker
+from investor_research.vault._xlsx_util import coerce_number as _coerce_number
 from investor_research.vault.field_registry import (
     DCF_SCALAR_LABELS,
     METADATA_LABELS,
@@ -67,6 +68,57 @@ def sha256_of(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1 << 16), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def detect_format(file_path: Path | str) -> str:
+    """Inspect a workbook and return its parser format identifier.
+
+    Returns one of:
+      - ``"bbv2_history"``     — per-company time series (CompanyHistoryBBV2)
+      - ``"watchlist_scorecard"`` — multi-company watchlist scorecard
+
+    Raises ``XlsxParseError`` when the workbook matches neither shape.
+    """
+    path = Path(file_path).resolve()
+    if not path.is_file():
+        raise XlsxParseError(f"workbook not found: {path}")
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", UserWarning)
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+
+    try:
+        # BBV2 signal: "Main" sheet with FISCAL_YEAR_PERIOD in col D rows 1-30.
+        for name in _PRIMARY_SHEET_CANDIDATES:
+            if name in wb.sheetnames:
+                ws = wb[name]
+                for row_idx in range(1, _HEADER_SCAN_ROWS + 1):
+                    cell = ws.cell(row=row_idx, column=4).value
+                    if isinstance(cell, str) and cell.strip() == "FISCAL_YEAR_PERIOD":
+                        return "bbv2_history"
+
+        # Watchlist scorecard signal: any visible sheet with "BB Ticker" in D4 + "Long Name" in E4.
+        for name in wb.sheetnames:
+            ws = wb[name]
+            if getattr(ws, "sheet_state", "visible") != "visible":
+                continue
+            d4 = ws.cell(row=4, column=4).value
+            e4 = ws.cell(row=4, column=5).value
+            if (
+                isinstance(d4, str)
+                and d4.strip().lower() == "bb ticker"
+                and isinstance(e4, str)
+                and e4.strip().lower() == "long name"
+            ):
+                return "watchlist_scorecard"
+    finally:
+        wb.close()
+
+    raise XlsxParseError(
+        f"unrecognized workbook format: {path.name}. "
+        "Supported: CompanyHistoryBBV2 (per-company history) and "
+        "multi-company watchlist scorecard."
+    )
 
 
 def parse_workbook(file_path: Path | str) -> FundamentalsSnapshot:
@@ -309,26 +361,6 @@ def _bucket_for_category(
     if category == "valuation":
         return valuation_history
     return series
-
-
-def _coerce_number(value: Any) -> float | None:
-    if value is None or value == "":
-        return None
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        if value != value:  # NaN guard
-            return None
-        return float(value)
-    if isinstance(value, str):
-        stripped = value.strip().replace(",", "")
-        if not stripped or stripped.startswith("#"):
-            return None
-        try:
-            return float(stripped)
-        except ValueError:
-            return None
-    return None
 
 
 def _extract_metadata_block(sheet: Worksheet, warnings_out: list[str]) -> dict[str, Any]:

@@ -30,3 +30,15 @@ data/
 
 # Sample Bloomberg/FactSet workbook used for local development only.
 CompanyHistoryBBV2 - *.xlsx
+
+# Any spreadsheet: Bloomberg/FactSet workbooks are proprietary.
+*.xlsx
+*.xlsm
+
+# Watchlist imports copy raw workbooks and write parsed data here.
+**/Watchlists/raw_exports/
+**/Watchlists/history/
+**/Watchlists/*.json
+
+# Obsidian app settings (if the vault lives in this folder).
+.obsidian/

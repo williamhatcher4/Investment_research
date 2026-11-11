@@ -24,10 +24,12 @@ from investor_research.models import ResearchEvidence, Source
 from investor_research.prompts.research import (
     COMPETITORS_QUERY,
     EARNINGS_SUMMARY_QUERY,
+    FOLLOW_UP_QUERY,
     RECENT_NEWS_QUERY,
     RESEARCH_COMPANY_QUERY,
     RISKS_QUERY,
 )
+from investor_research.source_quality import build_evidence_claims, enrich_source
 from investor_research.tickers import InvalidTickerError, validate_ticker as _validate_ticker
 
 # Re-exports preserved for backwards compatibility with the rest of the
@@ -40,6 +42,7 @@ __all__ = [
     "get_earnings_summary",
     "get_competitors",
     "get_risks",
+    "research_follow_up",
 ]
 
 logger = logging.getLogger(__name__)
@@ -97,6 +100,7 @@ def _envelope(
         "answer": evidence.answer,
         "results": [r.model_dump(mode="json") for r in evidence.results],
         "sources": [s.model_dump(mode="json") for s in sources],
+        "evidence_claims": build_evidence_claims(evidence.results, sources),
         "fmp_snapshot": _snapshot_dump(snapshot),
         "fundamentals_snapshot": fundamentals_block,
         "notes": final_notes,
@@ -147,14 +151,14 @@ def _combine_sources(
     if vault_snapshot is not None and vault_snapshot.has_data():
         vault_source = vault_snapshot.to_source()
         if vault_source is not None:
-            out.append(vault_source)
+            out.append(enrich_source(vault_source))
     fmp_source = snapshot.to_source()
     if fmp_source is not None:
-        out.append(fmp_source)
+        out.append(enrich_source(fmp_source))
     seen = {s.url for s in out}
     for src in provider_sources:
         if src.url not in seen:
-            out.append(src)
+            out.append(enrich_source(src))
             seen.add(src.url)
     return out
 
@@ -249,6 +253,41 @@ def get_risks(ticker: str) -> dict[str, Any]:
     query = RISKS_QUERY.format(ticker=ticker)
     evidence = provider.search(query, max_results=10)
     return _envelope(ticker=ticker, settings=settings, snapshot=snapshot, evidence=evidence)
+
+
+def research_follow_up(
+    ticker: str,
+    question: str,
+    recency_days: int | None = None,
+) -> dict[str, Any]:
+    """Answer an arbitrary follow-up with a fresh evidence search.
+
+    This tool exists for conversational follow-ups that do not fit neatly
+    into the fixed Phase 1/2 tools. It always calls the configured research
+    provider, so Claude can ground the follow-up in fresh MCP evidence rather
+    than only reusing prior chat context.
+    """
+    ticker = _validate_ticker(ticker)
+    if not isinstance(question, str) or not question.strip():
+        raise ValueError("question must be a non-empty string")
+    if recency_days is not None:
+        if not isinstance(recency_days, int) or recency_days <= 0 or recency_days > 3650:
+            raise ValueError("recency_days must be a positive integer <= 3650")
+
+    provider, fmp, settings = _make_clients()
+    snapshot = fmp.fetch_snapshot(ticker)
+    query = FOLLOW_UP_QUERY.format(ticker=ticker, question=question.strip())
+    evidence = provider.search(query, recency_days=recency_days, max_results=10)
+    notes = ["follow_up_question=" + question.strip()]
+    if recency_days is not None:
+        notes.append(f"recency_days={recency_days}")
+    return _envelope(
+        ticker=ticker,
+        settings=settings,
+        snapshot=snapshot,
+        evidence=evidence,
+        notes=notes,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - manual smoke test

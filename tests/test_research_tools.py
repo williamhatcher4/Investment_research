@@ -17,6 +17,7 @@ from investor_research.tools.research import (
     get_recent_news,
     get_risks,
     research_company,
+    research_follow_up,
 )
 
 _PROVIDER_PATH = "investor_research.tools.research.make_research_provider"
@@ -139,6 +140,38 @@ def test_get_risks_returns_evidence(monkeypatch, settings_tavily):
     issued_query = fake_provider.search.call_args.args[0]
     assert issued_query.startswith("Material investment risks")
     assert out["sources"][0]["url"] == "https://sec.gov/foo"
+
+
+def test_research_follow_up_always_calls_provider(monkeypatch, settings_tavily_with_fmp):
+    snap = FmpSnapshot(ticker="MSFT", quote={"price": 400.0})
+    fake_provider, fake_fmp = _patched(
+        monkeypatch, settings_tavily_with_fmp, _evidence(), snap
+    )
+
+    out = research_follow_up(
+        "msft",
+        "What changed in Azure margins since the last earnings call?",
+        recency_days=60,
+    )
+
+    fake_fmp.fetch_snapshot.assert_called_once_with("MSFT")
+    fake_provider.search.assert_called_once()
+    query = fake_provider.search.call_args.args[0]
+    assert "Follow-up investment research question for MSFT" in query
+    assert "Azure margins" in query
+    assert fake_provider.search.call_args.kwargs["recency_days"] == 60
+    assert "follow_up_question=What changed in Azure margins" in out["notes"][0]
+
+
+@pytest.mark.parametrize("bad_question", ["", "   ", None])
+def test_research_follow_up_validates_question(
+    monkeypatch, settings_tavily, bad_question
+):
+    monkeypatch.setattr(
+        "investor_research.tools.research.get_settings", lambda: settings_tavily
+    )
+    with pytest.raises(ValueError):
+        research_follow_up("MSFT", bad_question)  # type: ignore[arg-type]
 
 
 # ---- failure modes -----------------------------------------------------
