@@ -15,6 +15,23 @@ structured financial statements.
 downstream does the analysis — distinguishing sourced facts from
 interpretation and composing the final investment memo.
 
+
+![Offline demo: the MCP server answering valuation, vault, SEC filings and memo calls for a fictional company](docs/demo.png)
+
+### Try it without API keys
+
+```bash
+pip install -r requirements.txt
+python demo/demo_client.py
+```
+
+This starts the real server and talks to it over MCP stdio, the same way
+Claude Desktop does. Only the outermost network calls (Tavily, FMP, SEC
+EDGAR) are swapped for **fictional** data in
+[`demo/fake_data.py`](demo/fake_data.py); the tool logic, local vault,
+SQLite index and MCP layer are the production code. The screenshot above is
+that command's real output.
+
 ---
 
 ## Tools
@@ -342,6 +359,8 @@ investor-research-mcp/
 │       ├── snapshots.py                 # parsed JSON read/write + import pipeline
 │       └── database.py                  # SQLite derived index
 ├── tests/                               # pytest unit tests with mocked clients
+├── demo/                                # offline demo on fictional data (no API keys)
+├── docs/demo.png                        # README screenshot
 ├── .env.example
 ├── requirements.txt
 ├── requirements-dev.txt
