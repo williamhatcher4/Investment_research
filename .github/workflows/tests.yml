@@ -27,3 +27,5 @@ jobs:
           TAVILY_API_KEY: dummy-ci-key
         run: |
           python -c "import asyncio, server; tools = asyncio.run(server.mcp.list_tools()); assert len(tools) == 17, len(tools); print([t.name for t in tools])"
+      - name: Run offline demo end to end
+        run: python demo/demo_client.py
