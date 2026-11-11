@@ -66,7 +66,7 @@ def _build_watchlist(path: Path) -> None:
 def test_import_watchlist_xlsx_full_flow(
     settings_with_vault, tmp_path: Path
 ) -> None:
-    src = tmp_path / "hatcher.xlsx"
+    src = tmp_path / "scorecard.xlsx"
     _build_watchlist(src)
     result = import_watchlist_xlsx(settings_with_vault, str(src))
 
@@ -102,7 +102,7 @@ def test_import_watchlist_xlsx_full_flow(
     asml_payload = json.loads(asml_path.read_text(encoding="utf-8"))
     assert asml_payload["normalized_ticker"] == "ASML"
 
-    # Peer set "hatcher_coverage" updated with all resolved tickers
+    # Peer set "watchlist_coverage" updated with all resolved tickers
     peer_path = settings_with_vault.vault_root / "Watchlists" / "peer_sets.yml"
     assert peer_path.is_file()
     peer_data = yaml.safe_load(peer_path.read_text(encoding="utf-8"))
@@ -122,7 +122,7 @@ def test_import_watchlist_xlsx_full_flow(
 def test_import_watchlist_dedupes_same_file(
     settings_with_vault, tmp_path: Path
 ) -> None:
-    src = tmp_path / "hatcher.xlsx"
+    src = tmp_path / "scorecard.xlsx"
     _build_watchlist(src)
     first = import_watchlist_xlsx(settings_with_vault, str(src))
     second = import_watchlist_xlsx(settings_with_vault, str(src))
@@ -134,7 +134,7 @@ def test_import_watchlist_dedupes_same_file(
 def test_load_watchlist_snapshot_roundtrip(
     settings_with_vault, tmp_path: Path
 ) -> None:
-    src = tmp_path / "hatcher.xlsx"
+    src = tmp_path / "scorecard.xlsx"
     _build_watchlist(src)
     import_watchlist_xlsx(settings_with_vault, str(src))
     loaded = load_watchlist_snapshot(settings_with_vault)
@@ -152,7 +152,7 @@ def test_load_watchlist_snapshot_returns_none_when_missing(settings_with_vault) 
 def test_load_company_watchlist_after_import(
     settings_with_vault, tmp_path: Path
 ) -> None:
-    src = tmp_path / "hatcher.xlsx"
+    src = tmp_path / "scorecard.xlsx"
     _build_watchlist(src)
     import_watchlist_xlsx(settings_with_vault, str(src))
     payload = load_company_watchlist(settings_with_vault, "AAPL")
@@ -169,7 +169,7 @@ def test_mcp_tool_import_wraps_envelope(
     monkeypatch, settings_with_vault, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(vault_tools, "get_settings", lambda: settings_with_vault)
-    src = tmp_path / "hatcher.xlsx"
+    src = tmp_path / "scorecard.xlsx"
     _build_watchlist(src)
     out = vault_tools.import_watchlist_xlsx_export(str(src))
     assert out["ok"] is True

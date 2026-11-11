@@ -1,4 +1,4 @@
-"""Tests for the Hatcher watchlist scorecard xlsx parser."""
+"""Tests for the watchlist scorecard xlsx parser."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from investor_research.vault.xlsx_parser import XlsxParseError, detect_format
 
 
 def _build_minimal_watchlist(path: Path) -> None:
-    """Build a 2-row synthetic workbook mimicking the Hatcher scorecard layout."""
+    """Build a 2-row synthetic workbook mimicking the watchlist scorecard layout."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Jan 12 2026"
@@ -99,13 +99,13 @@ def _build_minimal_watchlist(path: Path) -> None:
 
 
 def test_detect_format_watchlist(tmp_path: Path) -> None:
-    src = tmp_path / "hatcher.xlsx"
+    src = tmp_path / "scorecard.xlsx"
     _build_minimal_watchlist(src)
-    assert detect_format(src) == "hatcher_watchlist"
+    assert detect_format(src) == "watchlist_scorecard"
 
 
 def test_parse_watchlist_three_rows(tmp_path: Path) -> None:
-    src = tmp_path / "hatcher.xlsx"
+    src = tmp_path / "scorecard.xlsx"
     _build_minimal_watchlist(src)
     snap = parse_watchlist_workbook(src)
     assert snap.sheet_name == "Jan 12 2026"
@@ -116,7 +116,7 @@ def test_parse_watchlist_three_rows(tmp_path: Path) -> None:
 
 
 def test_parse_watchlist_normalized_metrics_for_aapl(tmp_path: Path) -> None:
-    src = tmp_path / "hatcher.xlsx"
+    src = tmp_path / "scorecard.xlsx"
     _build_minimal_watchlist(src)
     snap = parse_watchlist_workbook(src)
     aapl = snap.rows[0]
@@ -133,7 +133,7 @@ def test_parse_watchlist_normalized_metrics_for_aapl(tmp_path: Path) -> None:
 
 
 def test_parse_watchlist_morningstar_strings_kept(tmp_path: Path) -> None:
-    src = tmp_path / "hatcher.xlsx"
+    src = tmp_path / "scorecard.xlsx"
     _build_minimal_watchlist(src)
     snap = parse_watchlist_workbook(src)
     aapl = snap.rows[0]
@@ -143,7 +143,7 @@ def test_parse_watchlist_morningstar_strings_kept(tmp_path: Path) -> None:
 
 
 def test_parse_watchlist_error_cell_becomes_none(tmp_path: Path) -> None:
-    src = tmp_path / "hatcher.xlsx"
+    src = tmp_path / "scorecard.xlsx"
     _build_minimal_watchlist(src)
     snap = parse_watchlist_workbook(src)
     bfb = snap.rows[1]
@@ -152,7 +152,7 @@ def test_parse_watchlist_error_cell_becomes_none(tmp_path: Path) -> None:
 
 
 def test_parse_watchlist_terminal_ref_row_stops_scan(tmp_path: Path) -> None:
-    src = tmp_path / "hatcher.xlsx"
+    src = tmp_path / "scorecard.xlsx"
     _build_minimal_watchlist(src)
     snap = parse_watchlist_workbook(src)
     # The #REF! row at row 9 must not appear as a parsed company.
@@ -161,7 +161,7 @@ def test_parse_watchlist_terminal_ref_row_stops_scan(tmp_path: Path) -> None:
 
 def test_parse_watchlist_normalized_ticker_unset_pre_alias(tmp_path: Path) -> None:
     """The parser itself does not resolve aliases — the snapshot orchestrator does."""
-    src = tmp_path / "hatcher.xlsx"
+    src = tmp_path / "scorecard.xlsx"
     _build_minimal_watchlist(src)
     snap = parse_watchlist_workbook(src)
     assert all(r.normalized_ticker is None for r in snap.rows)

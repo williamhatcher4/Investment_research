@@ -1,4 +1,4 @@
-"""Shared helpers used by both xlsx parsers (BBV2 history + Hatcher watchlist)."""
+"""Shared helpers used by both xlsx parsers (BBV2 history + watchlist scorecard)."""
 
 from __future__ import annotations
 

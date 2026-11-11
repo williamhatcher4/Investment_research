@@ -1,6 +1,6 @@
-"""Parse Hatcher-style multi-company watchlist scorecard workbooks.
+"""Parse multi-company watchlist scorecard workbooks.
 
-The supported layout (``Hatcher_HL_Workbook_BB_V3``) puts all companies on
+The supported layout puts all companies on
 a single date-named sheet. The header occupies rows 1-5 with section
 bands across the top and sub-labels (``5 years`` / ``10 years``) on row 5.
 Company rows begin at row 6, one per company, with the Bloomberg ticker
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 # Column index (1-based) -> normalized numeric metric key.
-# Verified against Hatcher_HL_Workbook_BB_V3_Jan_12_2026_Clean_V16.xlsx (Jan 2026).
+# Verified against the original scorecard workbook (Jan 2026).
 _NUMERIC_METRIC_COLUMNS: dict[int, str] = {
     10: "revenue_growth_5y",         # J
     11: "revenue_growth_10y",        # K
@@ -118,7 +118,7 @@ _MONTHS = {
 
 
 def parse_watchlist_workbook(file_path: Path | str) -> WatchlistSnapshot:
-    """Parse a Hatcher-style watchlist scorecard xlsx into a snapshot.
+    """Parse a watchlist scorecard xlsx into a snapshot.
 
     Reads computed values (``data_only=True``) so error cells come through
     as the literal strings ``"#NAME?"`` / ``"#REF!"`` etc., which the

@@ -75,7 +75,7 @@ def detect_format(file_path: Path | str) -> str:
 
     Returns one of:
       - ``"bbv2_history"``     — per-company time series (CompanyHistoryBBV2)
-      - ``"hatcher_watchlist"`` — multi-company scorecard (Hatcher_HL_Workbook)
+      - ``"watchlist_scorecard"`` — multi-company watchlist scorecard
 
     Raises ``XlsxParseError`` when the workbook matches neither shape.
     """
@@ -97,7 +97,7 @@ def detect_format(file_path: Path | str) -> str:
                     if isinstance(cell, str) and cell.strip() == "FISCAL_YEAR_PERIOD":
                         return "bbv2_history"
 
-        # Hatcher signal: any visible sheet with "BB Ticker" in D4 + "Long Name" in E4.
+        # Watchlist scorecard signal: any visible sheet with "BB Ticker" in D4 + "Long Name" in E4.
         for name in wb.sheetnames:
             ws = wb[name]
             if getattr(ws, "sheet_state", "visible") != "visible":
@@ -110,14 +110,14 @@ def detect_format(file_path: Path | str) -> str:
                 and isinstance(e4, str)
                 and e4.strip().lower() == "long name"
             ):
-                return "hatcher_watchlist"
+                return "watchlist_scorecard"
     finally:
         wb.close()
 
     raise XlsxParseError(
         f"unrecognized workbook format: {path.name}. "
         "Supported: CompanyHistoryBBV2 (per-company history) and "
-        "Hatcher watchlist scorecard."
+        "multi-company watchlist scorecard."
     )
 
 

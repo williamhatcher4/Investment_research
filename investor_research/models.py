@@ -404,7 +404,7 @@ class VaultCompany(BaseModel):
 
 
 class WatchlistRow(BaseModel):
-    """One company's row in a Hatcher-style watchlist scorecard workbook."""
+    """One company's row in a watchlist scorecard workbook."""
 
     model_config = ConfigDict(extra="ignore")
 

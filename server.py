@@ -246,7 +246,7 @@ def batch_dcf_screen(
 ) -> dict:
     """Run a DCF across all watchlist companies and rank by upside to intrinsic value.
 
-    Uses the Hatcher watchlist snapshot as the base rate for growth inputs
+    Uses the watchlist snapshot as the base rate for growth inputs
     (historical FCF per share growth 5y/10y). Sources current FCF per share
     from vault data or FMP. Returns the top ``top_n`` companies ranked by
     upside (intrinsic value / current price - 1), descending.
@@ -409,12 +409,12 @@ def load_peer_set(name: str) -> dict:
 
 @mcp.tool()
 def import_watchlist_xlsx_export(file_path: str) -> dict:
-    """Import a Hatcher-style multi-company watchlist scorecard xlsx.
+    """Import a multi-company watchlist scorecard xlsx.
 
     Parses the workbook, fans out per-company watchlist data under
     Companies/{TICKER}/parsed/watchlist.json, writes a master index under
     Watchlists/, auto-seeds US-suffix Bloomberg tickers in
-    Watchlists/ticker_aliases.yml, and updates the 'hatcher_coverage'
+    Watchlists/ticker_aliases.yml, and updates the 'watchlist_coverage'
     peer set. Returns the list of Bloomberg tickers (non-US) that still
     need manual alias entries.
     """
@@ -423,7 +423,7 @@ def import_watchlist_xlsx_export(file_path: str) -> dict:
 
 @mcp.tool()
 def load_watchlist_snapshot() -> dict:
-    """Return the most recently imported Hatcher watchlist snapshot."""
+    """Return the most recently imported watchlist snapshot."""
     return _load_watchlist_snapshot_tool()
 
 

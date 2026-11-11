@@ -44,11 +44,11 @@ VALUATION_FILE = "valuation.json"
 METADATA_FILE = "metadata.json"
 WATCHLIST_FILE = "watchlist.json"
 
-# Layout under {VAULT_ROOT}/Watchlists/ for the Hatcher multi-company workbook.
-WATCHLIST_INDEX_FILENAME = "hatcher_workbook_latest.json"
+# Layout under {VAULT_ROOT}/Watchlists/ for the multi-company watchlist scorecard.
+WATCHLIST_INDEX_FILENAME = "watchlist_scorecard_latest.json"
 WATCHLIST_HISTORY_DIRNAME = "history"
 WATCHLIST_RAW_EXPORTS_DIRNAME = "raw_exports"
-WATCHLIST_PEER_SET_NAME = "hatcher_coverage"
+WATCHLIST_PEER_SET_NAME = "watchlist_coverage"
 
 
 def _parsed_dir(settings: Settings, ticker: str) -> Path:
@@ -295,18 +295,18 @@ def import_watchlist_xlsx(
     *,
     copy_to_vault: bool = True,
 ) -> dict[str, Any]:
-    """Import a Hatcher-style watchlist workbook end-to-end.
+    """Import a multi-company watchlist scorecard workbook end-to-end.
 
     Steps:
       1. SHA-256 the source and copy it under ``Watchlists/raw_exports/`` (hash-deduped).
       2. Parse the workbook to a ``WatchlistSnapshot``.
       3. Auto-seed US-suffix Bloomberg tickers in ``Watchlists/ticker_aliases.yml``
          and resolve every row's ``normalized_ticker`` via the alias map.
-      4. Write the JSON snapshot to ``Watchlists/hatcher_workbook_latest.json``
+      4. Write the JSON snapshot to ``Watchlists/watchlist_scorecard_latest.json``
          plus a dated audit copy under ``Watchlists/history/``.
       5. For each resolved ticker, ensure the company folder exists and
          write ``Companies/{TICKER}/parsed/watchlist.json``.
-      6. Update the peer set ``hatcher_coverage`` with the resolved tickers.
+      6. Update the peer set ``watchlist_coverage`` with the resolved tickers.
     """
     src = Path(file_path).expanduser().resolve()
     if not src.is_file():
@@ -352,7 +352,7 @@ def import_watchlist_xlsx(
     removed_stale = _remove_stale_watchlist_files(
         settings, {r.normalized_ticker for r in snapshot.rows if r.normalized_ticker}
     )
-    peer_set_written = _update_hatcher_peer_set(settings, snapshot)
+    peer_set_written = _update_watchlist_peer_set(settings, snapshot)
 
     rows_resolved = sum(1 for r in snapshot.rows if r.normalized_ticker)
     unresolved_tickers = unresolved_aliases(aliases, bb_tickers)
@@ -384,7 +384,7 @@ def import_watchlist_xlsx(
 
 
 def load_watchlist_snapshot(settings: Settings) -> WatchlistSnapshot | None:
-    """Load ``Watchlists/hatcher_workbook_latest.json`` if it exists."""
+    """Load ``Watchlists/watchlist_scorecard_latest.json`` if it exists."""
     path = _watchlists_dir(settings) / WATCHLIST_INDEX_FILENAME
     if not path.is_file():
         return None
@@ -412,7 +412,7 @@ def _write_watchlist_snapshot(
 
     index_path = base / WATCHLIST_INDEX_FILENAME
     date_token = snapshot.snapshot_date or datetime.now(timezone.utc).date().isoformat()
-    dated_path = history / f"hatcher_workbook_{date_token}.json"
+    dated_path = history / f"watchlist_scorecard_{date_token}.json"
 
     payload = snapshot.model_dump(mode="json")
     text = json.dumps(payload, indent=2, default=str)
@@ -477,10 +477,10 @@ def _remove_stale_watchlist_files(settings: Settings, keep: set[str]) -> list[Pa
     return removed
 
 
-def _update_hatcher_peer_set(
+def _update_watchlist_peer_set(
     settings: Settings, snapshot: WatchlistSnapshot
 ) -> dict[str, Any] | None:
-    """Write/update the ``hatcher_coverage`` peer set with resolved tickers.
+    """Write/update the ``watchlist_coverage`` peer set with resolved tickers.
 
     Uses the same on-disk format as ``investor_research.tools.vault_tools._write_peer_sets``
     so existing peer-set tools see this entry.

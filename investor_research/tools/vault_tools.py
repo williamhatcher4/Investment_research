@@ -150,10 +150,10 @@ def import_watchlist_xlsx_export(
     *,
     reindex: bool = True,
 ) -> dict[str, Any]:
-    """Import a Hatcher-style multi-company watchlist scorecard xlsx.
+    """Import a multi-company watchlist scorecard xlsx.
 
     Fans out per-company watchlist data, writes a master index, auto-seeds
-    US-suffix Bloomberg tickers, and updates the ``hatcher_coverage`` peer set.
+    US-suffix Bloomberg tickers, and updates the ``watchlist_coverage`` peer set.
     Unresolved (non-US) Bloomberg tickers are surfaced in ``unresolved_tickers``
     so the user can add them to ``Watchlists/ticker_aliases.yml``.
     """
@@ -190,7 +190,7 @@ def load_watchlist_snapshot_tool() -> dict[str, Any]:
             "has_snapshot": False,
             "message": (
                 "No watchlist snapshot on file yet. Run `import_watchlist_xlsx_export` "
-                "against a Hatcher-style scorecard xlsx."
+                "against a watchlist scorecard xlsx."
             ),
         }
     return {

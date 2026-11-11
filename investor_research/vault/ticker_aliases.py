@@ -1,6 +1,6 @@
 """Bloomberg-ticker -> normalized-ticker alias mapping for the watchlist importer.
 
-Bloomberg tickers in the Hatcher scorecard look like
+Bloomberg tickers in the watchlist scorecard look like
 ``"aapl us equity"``, ``"ASML NA Equity"``, ``"BF/B US Equity"``. The
 vault stores companies under canonical short tickers (``"AAPL"``,
 ``"ASML"``, ``"BF.B"``). This module owns the mapping.
