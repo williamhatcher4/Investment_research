@@ -137,3 +137,31 @@ def test_extract_10k_risks_handles_edgar_error(monkeypatch, settings_tavily):
     assert out["edgar_error"] == "EDGAR 500"
     assert out["answer"] == "fallback"  # search still ran
     assert out["search_skipped"] is False
+
+
+def test_extract_filing_sections_skips_table_of_contents() -> None:
+    from investor_research.tools.filings import extract_filing_sections
+
+    html = """<html><body><h2>TABLE OF CONTENTS</h2><table>
+    <tr><td>Item 1.</td><td>Business</td><td>3</td></tr>
+    <tr><td>Item 1A.</td><td>Risk Factors</td><td>12</td></tr>
+    <tr><td>Item 1B.</td><td>Unresolved Staff Comments</td><td>25</td></tr>
+    <tr><td>Item 7.</td><td>MD&amp;A</td><td>30</td></tr></table>
+    <p>Item 1. Business</p><p>We make widgets.</p>
+    <p>Item 1A. Risk Factors</p>
+    <p>Our supplier concentration could hurt margins. Demand is cyclical.</p>
+    <p>See Item 7. for more detail.</p>
+    <p>Item 1B. Unresolved Staff Comments</p><p>None.</p>
+    <p>Item 7. Management's Discussion and Analysis</p><p>Revenue grew.</p>
+    <p>Item 8. Financial Statements</p></body></html>"""
+    sections = extract_filing_sections(
+        html, {"item_1a": ("1A", ("1B", "2")), "item_7": ("7", ("7A", "8"))}
+    )
+    risk = sections["item_1a"]
+    assert risk["found"] is True
+    assert "supplier concentration" in risk["text"]
+    assert "Unresolved" not in risk["text"]
+    item_7 = sections["item_7"]["text"]
+    assert item_7.startswith("Item 7. Management")
+    assert "Revenue grew" in item_7
+    assert "Unresolved" not in item_7

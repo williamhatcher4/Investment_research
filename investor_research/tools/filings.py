@@ -159,15 +159,31 @@ def extract_filing_sections(
     text = _html_to_text(html_or_text)
     out: dict[str, Any] = {}
     for key, (start_item, end_items) in section_specs.items():
-        start = _find_item_heading(text, start_item)
-        if start is None:
+        # A 10-K mentions each Item several times: in the table of contents,
+        # in mid-sentence cross-references ("see Item 7"), and at the real
+        # heading. Headings start a line, so prefer those; then keep the
+        # longest span, since table-of-contents entries are a line long.
+        starts = _find_item_headings(text, start_item)
+        best: tuple[int, int] | None = None
+        for i, start in enumerate(starts):
+            stops = [
+                pos
+                for item in end_items
+                if (pos := _find_item_heading(text, item, start + 20)) is not None
+            ]
+            if i + 1 < len(starts):
+                stops.append(starts[i + 1])
+            # Any later line-start "Item N" heading also closes the section.
+            next_heading = _ANY_ITEM_HEADING_RE.search(text, start + 20)
+            if next_heading:
+                stops.append(next_heading.start())
+            end = min(stops) if stops else len(text)
+            if best is None or end - start > best[1] - best[0]:
+                best = (start, end)
+        if best is None:
             out[key] = {"found": False, "text": "", "char_count": 0}
             continue
-        end_positions = [
-            pos for item in end_items if (pos := _find_item_heading(text, item, start + 20)) is not None
-        ]
-        end = min(end_positions) if end_positions else len(text)
-        section_text = text[start:end].strip()
+        section_text = text[best[0]:best[1]].strip()
         truncated = len(section_text) > max_chars
         if truncated:
             section_text = section_text[:max_chars].rsplit(" ", 1)[0].strip() + "..."
@@ -193,16 +209,28 @@ def _html_to_text(html_or_text: str) -> str:
     return text.strip()
 
 
+_ANY_ITEM_HEADING_RE = re.compile(r"(?im)^[ \t]*item\s+\d{1,2}[a-c]?\.?\s+")
+
+
+def _item_heading_re(item: str, *, line_start: bool) -> re.Pattern[str]:
+    prefix = r"(?im)^[ \t]*" if line_start else r"(?i)\b"
+    return re.compile(rf"{prefix}item\s+{re.escape(item)}\.?\s+")
+
+
+def _find_item_headings(text: str, item: str) -> list[int]:
+    """Positions of ``Item <item>`` headings; line-start matches preferred."""
+    for line_start in (True, False):
+        found = [m.start() for m in _item_heading_re(item, line_start=line_start).finditer(text)]
+        if found:
+            return found
+    return []
+
+
 def _find_item_heading(text: str, item: str, start: int = 0) -> int | None:
-    item_re = re.escape(item).replace("\\A", "A")
-    patterns = (
-        rf"(?im)^\s*item\s+{item_re}\.?\s+",
-        rf"(?im)\bitem\s+{item_re}\.?\s+",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, text[start:])
+    for line_start in (True, False):
+        match = _item_heading_re(item, line_start=line_start).search(text, start)
         if match:
-            return start + match.start()
+            return match.start()
     return None
 
 

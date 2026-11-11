@@ -124,8 +124,8 @@ def dcf_scenario_analysis(
             "message": "No parsed vault DCF available for this ticker.",
         }
     dcf = snapshot.dcf
-    target = _num(dcf.get("target_price")) or _num(dcf.get("intrinsic_value_per_share"))
-    intrinsic = _num(dcf.get("intrinsic_value_per_share")) or target
+    target = _first_num(dcf.get("target_price"), dcf.get("intrinsic_value_per_share"))
+    intrinsic = _first_num(dcf.get("intrinsic_value_per_share"), target)
     current = _num(dcf.get("current_share_price"))
     scenarios = []
     for name, adjustment in (("bear", bear_adjustment), ("base", 0.0), ("bull", bull_adjustment)):
@@ -147,8 +147,12 @@ def dcf_scenario_analysis(
         "source": "vault",
         "parsed_at": snapshot.parsed_at.isoformat(),
         "base_dcf": dcf,
+        "scenario_method": (
+            f"Flat {bear_adjustment:+.0%} / {bull_adjustment:+.0%} adjustment to the "
+            "workbook's target price and intrinsic value (not a re-run of the model)."
+        ),
         "scenarios": scenarios,
-        "reverse_dcf": _reverse_dcf_summary(dcf, current=current, intrinsic=intrinsic),
+        "reverse_dcf": _reverse_dcf_from_vault(settings, ticker, snapshot, current),
     }
 
 
@@ -174,6 +178,14 @@ def build_dcf(
     current price, and a note on each data source used.
     """
     ticker = _validate_ticker(ticker)
+    if discount_rate <= terminal_growth_rate:
+        return {
+            "ticker": ticker,
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "ok": False,
+            "error": "INVALID_RATES",
+            "message": "discount_rate must be strictly greater than terminal_growth_rate.",
+        }
     settings = get_settings()
     notes: list[str] = []
 
@@ -225,14 +237,21 @@ def build_dcf(
         }
     notes.append(f"Growth rates sourced from: {growth_source}")
 
-    # ---- discount rate check ------------------------------------------------
-    if discount_rate <= terminal_growth_rate:
+    # ---- sanity checks on model inputs ------------------------------------------
+    input_error = _dcf_input_error(fcf_ps, g1, g2)
+    if input_error is not None:
+        code, message = input_error
         return {
             "ticker": ticker,
             "as_of": datetime.now(timezone.utc).isoformat(),
             "ok": False,
-            "error": "INVALID_RATES",
-            "message": "discount_rate must be strictly greater than terminal_growth_rate.",
+            "error": code,
+            "message": message,
+            "base_fcf_per_share": fcf_ps,
+            "base_fcf_source": fcf_source,
+            "growth_rate_yr1_5": g1,
+            "growth_rate_yr6_10": g2,
+            "growth_rate_source": growth_source,
         }
 
     # ---- current price & shares --------------------------------------------
@@ -247,6 +266,11 @@ def build_dcf(
     intrinsic = dcf["intrinsic_value_per_share"]
     upside = _ratio_delta(intrinsic, current_price)
     mos = upside  # same formula: intrinsic/price - 1
+    implied_g1 = (
+        _implied_growth_rate(fcf_ps, current_price, discount_rate, terminal_growth_rate)
+        if current_price is not None
+        else None
+    )
 
     return {
         "ticker": ticker,
@@ -266,6 +290,11 @@ def build_dcf(
         "intrinsic_value_per_share": intrinsic,
         "upside_to_current": upside,
         "margin_of_safety": mos,
+        "reverse_dcf": {
+            "implied_growth_rate_yr1_5": implied_g1,
+            "method": "Solves for the years 1-5 growth rate (years 6-10 at 70% of it) "
+            "that makes this DCF equal the current price.",
+        },
         "notes": notes,
     }
 
@@ -287,6 +316,12 @@ def batch_dcf_screen(
     Returns the top ``top_n`` companies sorted by upside (intrinsic / price - 1),
     with full inputs and data-source notes per row.
     """
+    if discount_rate <= terminal_growth_rate:
+        return {
+            "ok": False,
+            "error": "INVALID_RATES",
+            "message": "discount_rate must be strictly greater than terminal_growth_rate.",
+        }
     settings = get_settings()
     if settings.vault_root is None:
         return {
@@ -350,14 +385,15 @@ def batch_dcf_screen(
             failed.append({"ticker": t, "reason": "NO_GROWTH_RATE"})
             continue
 
-        if discount_rate <= terminal_growth_rate:
-            failed.append({"ticker": t, "reason": "INVALID_RATES"})
+        input_error = _dcf_input_error(fcf_ps, g1, g2)
+        if input_error is not None:
+            failed.append({"ticker": t, "reason": input_error[0], "message": input_error[1]})
             continue
 
         dcf = _compute_dcf_per_share(fcf_ps, g1, g2, discount_rate, terminal_growth_rate)
         intrinsic = dcf["intrinsic_value_per_share"]
 
-        current_price = _num((fmp_snap.quote or {}).get("price")) or _num(row.price)
+        current_price = _first_num((fmp_snap.quote or {}).get("price"), row.price)
         upside = _ratio_delta(intrinsic, current_price)
 
         results.append({
@@ -511,32 +547,45 @@ def _resolve_growth_rates(
     watchlist: dict[str, Any] | None,
     vault_snap: Any,
 ) -> tuple[float | None, float | None, str]:
-    """Return (growth_yr1_5, growth_yr6_10, source_label)."""
+    """Return (growth_yr1_5, growth_yr6_10, source_label).
+
+    Overrides are used as given (decimals, e.g. 0.12 for 12%). Rates read from
+    workbooks are converted from percent to decimal when they look like
+    percentages (|value| > 1), and the source label says so.
+    """
     if override_g1 is not None:
-        g2 = override_g2 if override_g2 is not None else override_g1 * 0.7
+        g2 = override_g2 if override_g2 is not None else override_g1 * _LATE_GROWTH_FADE
         return override_g1, g2, "provided"
 
-    # 1. Watchlist historical FCF per share growth rates
+    candidates: list[tuple[str, Any, Any]] = []
     if watchlist:
         metrics = watchlist.get("metrics") or {}
-        g1 = _num(metrics.get("fcf_per_share_growth_5y"))
-        g2_raw = _num(metrics.get("fcf_per_share_growth_10y"))
-        if g1 is not None:
-            g2 = g2_raw if g2_raw is not None else g1 * 0.7
-            return g1, g2, "watchlist_fcf_per_share_growth"
-
-        # Fallback to revenue growth as proxy
-        g1 = _num(metrics.get("revenue_growth_5y"))
-        if g1 is not None:
-            return g1, g1 * 0.7, "watchlist_revenue_growth_proxy"
-
-    # 2. Vault DCF consensus growth
+        candidates.append((
+            "watchlist_fcf_per_share_growth",
+            metrics.get("fcf_per_share_growth_5y"),
+            metrics.get("fcf_per_share_growth_10y"),
+        ))
+        candidates.append(("watchlist_revenue_growth_proxy", metrics.get("revenue_growth_5y"), None))
     if vault_snap is not None and vault_snap.dcf:
-        g1 = _num(vault_snap.dcf.get("fcf_growth_projection_10yr")) or _num(
-            vault_snap.dcf.get("fcfps_growth_5yr")
-        )
-        if g1 is not None:
-            return g1, g1 * 0.7, "vault_dcf_growth_projection"
+        candidates.append((
+            "vault_dcf_growth_projection",
+            _first_num(
+                vault_snap.dcf.get("fcf_growth_projection_10yr"),
+                vault_snap.dcf.get("fcfps_growth_5yr"),
+            ),
+            None,
+        ))
+
+    for label, raw_g1, raw_g2 in candidates:
+        g1, converted = _as_decimal_rate(_num(raw_g1))
+        if g1 is None:
+            continue
+        g2, converted_g2 = _as_decimal_rate(_num(raw_g2))
+        if g2 is None:
+            g2 = g1 * _LATE_GROWTH_FADE
+        if converted or converted_g2:
+            label += " (converted from percent)"
+        return g1, g2, label
 
     return None, None, "unavailable"
 
@@ -548,24 +597,23 @@ def _compute_dcf_per_share(
     discount_rate: float,
     terminal_growth: float,
 ) -> dict[str, Any]:
-    """Core 10-year per-share DCF calculation."""
+    """Core 10-year per-share DCF calculation (two-stage growth + Gordon terminal)."""
     projections: list[dict[str, Any]] = []
     fcf = base_fcf_ps
+    pv_fcf_sum = 0.0
     for yr in range(1, 11):
         g = growth_yr1_5 if yr <= 5 else growth_yr6_10
         fcf = fcf * (1 + g)
         pv = fcf / (1 + discount_rate) ** yr
+        pv_fcf_sum += pv
         projections.append({
             "year": yr,
             "fcf_per_share": round(fcf, 4),
             "pv_fcf": round(pv, 4),
         })
 
-    terminal_fcf_ps = projections[-1]["fcf_per_share"]
-    terminal_value_ps = terminal_fcf_ps * (1 + terminal_growth) / (discount_rate - terminal_growth)
+    terminal_value_ps = fcf * (1 + terminal_growth) / (discount_rate - terminal_growth)
     pv_terminal_ps = terminal_value_ps / (1 + discount_rate) ** 10
-
-    pv_fcf_sum = sum(p["pv_fcf"] for p in projections)
     intrinsic = pv_fcf_sum + pv_terminal_ps
 
     return {
@@ -574,6 +622,108 @@ def _compute_dcf_per_share(
         "terminal_value_per_share": round(terminal_value_ps, 4),
         "pv_terminal_value_per_share": round(pv_terminal_ps, 4),
         "intrinsic_value_per_share": round(intrinsic, 4),
+    }
+
+
+# Years 6-10 growth defaults to this fraction of years 1-5 growth.
+_LATE_GROWTH_FADE = 0.7
+# Plausible bounds for an annual FCF growth assumption (as decimals).
+_MIN_GROWTH, _MAX_GROWTH = -0.5, 0.5
+
+
+def _as_decimal_rate(value: float | None) -> tuple[float | None, bool]:
+    """Return (rate_as_decimal, was_converted). Treats |value| > 1 as a percent."""
+    if value is None:
+        return None, False
+    if abs(value) > 1:
+        return value / 100.0, True
+    return value, False
+
+
+def _dcf_input_error(
+    base_fcf_ps: float, growth_yr1_5: float, growth_yr6_10: float
+) -> tuple[str, str] | None:
+    """Return (error_code, message) when inputs would make the DCF meaningless."""
+    if base_fcf_ps <= 0:
+        return (
+            "NON_POSITIVE_BASE_FCF",
+            f"Base FCF per share is {base_fcf_ps:.4g}; a growth DCF on zero or "
+            "negative free cash flow is not meaningful.",
+        )
+    for label, g in (("growth_rate_yr1_5", growth_yr1_5), ("growth_rate_yr6_10", growth_yr6_10)):
+        if not _MIN_GROWTH <= g <= _MAX_GROWTH:
+            return (
+                "GROWTH_OUT_OF_RANGE",
+                f"{label}={g:.4g} is outside the plausible range "
+                f"[{_MIN_GROWTH:.0%}, {_MAX_GROWTH:.0%}]. Pass rates as decimals (0.12 = 12%).",
+            )
+    return None
+
+
+def _implied_growth_rate(
+    base_fcf_ps: float,
+    price: float,
+    discount_rate: float,
+    terminal_growth: float,
+    *,
+    fade: float = _LATE_GROWTH_FADE,
+) -> float | None:
+    """Reverse DCF: the years 1-5 growth rate at which intrinsic value == price.
+
+    Years 6-10 grow at ``fade`` x that rate. Solved by bisection, since
+    intrinsic value rises monotonically with growth. Returns ``None`` when
+    the price falls outside what growth in [-50%, +50%] can explain.
+    """
+    if base_fcf_ps <= 0 or price is None or price <= 0 or discount_rate <= terminal_growth:
+        return None
+
+    def value_at(g: float) -> float:
+        return _compute_dcf_per_share(
+            base_fcf_ps, g, g * fade, discount_rate, terminal_growth
+        )["intrinsic_value_per_share"]
+
+    lo, hi = _MIN_GROWTH, _MAX_GROWTH
+    if not value_at(lo) <= price <= value_at(hi):
+        return None
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if value_at(mid) < price:
+            lo = mid
+        else:
+            hi = mid
+    return round((lo + hi) / 2, 4)
+
+
+def _reverse_dcf_from_vault(
+    settings: Settings, ticker: str, snapshot: Any, current: float | None
+) -> dict[str, Any]:
+    """Implied growth at the current price, using the vault's FCF and DCF rates."""
+    watchlist = _load_company_watchlist_data(settings, ticker)
+    fcf_ps, fcf_source = _resolve_base_fcf_ps(None, FmpSnapshot(ticker=ticker), snapshot, watchlist)
+    discount = _first_num(snapshot.dcf.get("discount_rate"), 0.09)
+    terminal = _first_num(snapshot.dcf.get("terminal_growth_rate"), 0.03)
+    discount, _ = _as_decimal_rate(discount)
+    terminal, _ = _as_decimal_rate(terminal)
+    implied = (
+        _implied_growth_rate(fcf_ps, current, discount, terminal)
+        if fcf_ps is not None and current is not None
+        else None
+    )
+    if implied is None:
+        return {
+            "available": False,
+            "message": "Need positive base FCF per share, a current price, and a price "
+            "reachable with growth between -50% and +50%.",
+        }
+    return {
+        "available": True,
+        "implied_growth_rate_yr1_5": implied,
+        "base_fcf_per_share": round(fcf_ps, 4),
+        "base_fcf_source": fcf_source,
+        "discount_rate": discount,
+        "terminal_growth_rate": terminal,
+        "method": "Solves for the years 1-5 growth rate (years 6-10 at 70% of it) "
+        "that makes the DCF equal the current price.",
     }
 
 
@@ -701,38 +851,24 @@ def _load_vault_snapshot(settings: Settings, ticker: str):
 
 
 def _num(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     return value if isinstance(value, (int, float)) else None
+
+
+def _first_num(*values: Any) -> float | None:
+    """First argument that is a real number (0 counts; None/strings do not)."""
+    for value in values:
+        number = _num(value)
+        if number is not None:
+            return number
+    return None
 
 
 def _ratio_delta(numerator: float | None, denominator: float | None) -> float | None:
     if numerator is None or denominator in (None, 0):
         return None
     return numerator / denominator - 1
-
-
-def _reverse_dcf_summary(
-    dcf: dict[str, Any],
-    *,
-    current: float | None,
-    intrinsic: float | None,
-) -> dict[str, Any]:
-    base_growth = _num(dcf.get("fcf_growth_projection_10yr")) or _num(dcf.get("terminal_growth_rate"))
-    if current is None or intrinsic in (None, 0) or base_growth is None:
-        return {
-            "available": False,
-            "message": "Insufficient DCF inputs for an implied-growth proxy.",
-        }
-    # A conservative proxy: scale the workbook's growth assumption by the
-    # market-price-to-intrinsic ratio. This is not a full spreadsheet solve.
-    implied_growth_proxy = base_growth * (current / intrinsic)
-    return {
-        "available": True,
-        "method": "price_to_intrinsic_scaled_growth_proxy",
-        "base_growth_input": base_growth,
-        "current_to_intrinsic_ratio": current / intrinsic,
-        "implied_growth_proxy": implied_growth_proxy,
-        "caveat": "Proxy only; use the source workbook for a full reverse-DCF solve.",
-    }
 
 
 def _vault_scale(units: str | None) -> float:

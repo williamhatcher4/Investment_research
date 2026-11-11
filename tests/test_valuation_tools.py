@@ -163,7 +163,31 @@ def test_dcf_scenario_analysis_from_vault(monkeypatch, settings_with_vault):
     assert out["ok"] is True
     assert out["scenarios"][1]["scenario"] == "base"
     assert out["scenarios"][1]["upside_to_current"] == pytest.approx(0.5)
-    assert out["reverse_dcf"]["available"] is True
+    # No FCF series in the vault, so a real reverse DCF can't be solved.
+    assert out["reverse_dcf"]["available"] is False
+
+
+def test_dcf_scenario_reverse_dcf_reproduces_price(monkeypatch, settings_with_vault):
+    create_company_folder(settings_with_vault, "NKE")
+    write_parsed_json(
+        settings_with_vault,
+        FundamentalsSnapshot(
+            ticker="NKE",
+            units="millions",
+            periods=["FY2024", "FY2025"],
+            series={"free_cash_flow": [4500.0, 5000.0], "shares_outstanding": [1500.0, 1250.0]},
+            dcf={"target_price": 120.0, "current_share_price": 80.0,
+                 "discount_rate": 0.09, "terminal_growth_rate": 0.03},
+        ),
+    )
+    monkeypatch.setattr(v, "get_settings", lambda: settings_with_vault)
+
+    rev = v.dcf_scenario_analysis("NKE")["reverse_dcf"]
+    assert rev["available"] is True
+    assert rev["base_fcf_per_share"] == pytest.approx(4.0)
+    g = rev["implied_growth_rate_yr1_5"]
+    value = v._compute_dcf_per_share(4.0, g, g * 0.7, 0.09, 0.03)["intrinsic_value_per_share"]
+    assert value == pytest.approx(80.0, rel=1e-3)
 
 
 def test_data_cross_check_flags_large_difference(monkeypatch, settings_with_vault):

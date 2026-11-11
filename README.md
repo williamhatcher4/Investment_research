@@ -45,16 +45,21 @@ that command's real output.
 | `get_earnings_summary`     | Most recently reported quarter: revenue, EPS, margins, guidance, market reaction         |
 | `get_competitors`          | Primary public competitors, seeded by FMP peer list                                      |
 | `get_risks`                | Material risks across operational / balance sheet / regulatory / macro / valuation / industry |
+| `research_follow_up`       | Fresh evidence search for an arbitrary follow-up question about a ticker                 |
 | `build_investment_memo`    | Bundles all five tools' evidence + an 11-section outline for Claude to fill in           |
 
-**Phase 2 — filings + valuation:**
+**Phase 2 — filings + valuation + DCF:**
 
 | Tool                       | What it returns                                                                          |
 |----------------------------|------------------------------------------------------------------------------------------|
 | `get_sec_filings`          | Recent 10-K / 10-Q / 8-K / proxy filings with direct EDGAR URLs (primary sources)        |
-| `extract_10k_risks`        | Latest 10-K filing URL + search evidence biased toward SEC for Item 1A summarization     |
+| `extract_10k_risks`        | Item 1A / 7 / 7A text pulled from the latest 10-K on EDGAR; web search only as fallback  |
 | `compare_peers`            | Side-by-side rows for multiple tickers (revenue, margins, multiples, debt) + comparison  |
-| `valuation_snapshot`       | Subject ticker's P/E, EV/EBITDA, FCF yield, margins, debt — plus peer-row averages       |
+| `valuation_snapshot`       | Subject ticker's P/E, EV/EBITDA, FCF yield, margins, debt — plus peer-row averages (FMP peers or a saved peer set) |
+| `build_dcf`                | 10-year two-stage per-share DCF with Gordon terminal value, input sanity checks, and a reverse DCF (growth implied by today's price) |
+| `batch_dcf_screen`         | Runs `build_dcf` across the imported watchlist and ranks companies by upside             |
+| `dcf_scenario_analysis`    | Bear/base/bull band around the workbook DCF + reverse DCF from vault free cash flow      |
+| `data_cross_check`         | Flags >5% differences between vault fundamentals and FMP (revenue, net income, debt, shares) |
 
 **Phase 3 — local research vault** (see [Local research vault](#local-research-vault)):
 
@@ -67,6 +72,13 @@ that command's real output.
 | `write_company_note`         | Write the body of the company's home note (`{TICKER}.md`); preserves YAML frontmatter           |
 | `write_memo_to_vault`        | Save a generated memo to `Companies/{TICKER}/memos/` with a dated filename                       |
 | `list_company_memos`         | List saved memos for a ticker, newest first                                                     |
+| `compare_to_last_memo`       | Latest + previous memo excerpts with instructions for a thesis-change review                    |
+| `screen_vault_companies`     | Screen companies on a metric's latest value (or a given period) against min/max thresholds      |
+| `compare_vault_metrics`      | Recent history of chosen metrics side by side across tickers                                    |
+| `vault_dashboard`            | Freshness, memo coverage and DCF flags for every company in the vault                            |
+| `write_peer_set` / `list_peer_sets` / `load_peer_set` | Save and reuse named peer groups (`Watchlists/peer_sets.yml`)          |
+| `import_watchlist_xlsx_export` | Import a multi-company watchlist scorecard workbook; fans out per-company rows               |
+| `load_watchlist_snapshot` / `load_company_watchlist` | Read the whole imported watchlist, or one company's row                 |
 
 Each Phase 1/2 tool returns:
 
@@ -185,7 +197,7 @@ Add the server to your Claude Desktop MCP config
 }
 ```
 
-Use **absolute paths**. Restart Claude Desktop. All 17 tools should
+Use **absolute paths**. Restart Claude Desktop. All 32 tools should
 appear in the tool picker.
 
 ---
@@ -331,7 +343,7 @@ rewrite required.
 
 ```
 investor-research-mcp/
-├── server.py                            # FastMCP entry point (17 tools)
+├── server.py                            # FastMCP entry point (32 tools)
 ├── investor_research/
 │   ├── config.py                        # env loading + Settings + provider selection
 │   ├── tickers.py                       # shared ticker validator
@@ -343,19 +355,22 @@ investor-research-mcp/
 │   │   ├── perplexity.py                # Perplexity Sonar client
 │   │   ├── fmp.py                       # Financial Modeling Prep client
 │   │   └── sec_edgar.py                 # SEC EDGAR client (filings, ticker→CIK)
+│   ├── source_quality.py                # source typing + quality tiers for citations
 │   ├── prompts/                         # per-tool query templates
 │   ├── tools/
 │   │   ├── research.py                  # 5 Phase 1 research tools
 │   │   ├── memo.py                      # build_investment_memo
 │   │   ├── filings.py                   # get_sec_filings, extract_10k_risks
-│   │   ├── valuation.py                 # compare_peers, valuation_snapshot
-│   │   └── vault_tools.py               # 7 Phase 3 vault MCP tools
+│   │   ├── valuation.py                 # peers, valuation, DCF + reverse DCF, batch screen
+│   │   └── vault_tools.py               # vault, watchlist, peer-set and screening tools
 │   └── vault/                           # Obsidian-compatible local vault
 │       ├── __main__.py                  # `python -m investor_research.vault [init|reindex]`
 │       ├── paths.py                     # folder layout + lifecycle
 │       ├── notes.py                     # NKE.md + memos + frontmatter
 │       ├── field_registry.py            # label → normalized-key mapping (extensible)
 │       ├── xlsx_parser.py               # Bloomberg/FactSet workbook parser
+│       ├── watchlist_parser.py          # multi-company watchlist scorecard parser
+│       ├── ticker_aliases.py            # Bloomberg ticker → exchange ticker aliases
 │       ├── snapshots.py                 # parsed JSON read/write + import pipeline
 │       └── database.py                  # SQLite derived index
 ├── tests/                               # pytest unit tests with mocked clients
@@ -377,12 +392,13 @@ investor-research-mcp/
 pytest -q
 ```
 
-134 tests covering: config + provider selection, logging redaction,
-Tavily / Perplexity / FMP / SEC EDGAR clients, every Phase 1, Phase 2,
-and Phase 3 tool's happy / error path, the Bloomberg/FactSet xlsx parser
-against a real workbook + a synthetic stub, parsed-JSON round-trip and
-import dedupe, SQLite reindex + filtered metric queries, vault-driven
-enrichment of `research_company` + `build_investment_memo`.
+About 200 tests covering: config + provider selection, logging redaction,
+Tavily / Perplexity / FMP / SEC EDGAR clients, every tool's happy / error
+path, DCF math against hand calculations and reverse-DCF round trips,
+10-K section extraction (including skipping the table of contents), the
+Bloomberg/FactSet and watchlist parsers, parsed-JSON round-trip and import
+dedupe, SQLite reindex + metric screens, and vault-driven enrichment of
+`research_company` + `build_investment_memo`.
 
 Smoke test (no Claude Desktop):
 
@@ -390,7 +406,7 @@ Smoke test (no Claude Desktop):
 python -c "import asyncio, server; print([t.name for t in asyncio.run(server.mcp.list_tools())])"
 ```
 
-Should print all 17 tool names.
+Should print all 32 tool names.
 
 Live single-tool check:
 
@@ -418,15 +434,19 @@ python -m investor_research.tools.research MSFT
 
 ## Status
 
-Phases 1, 2, and 3 complete. 17 tools wired:
+32 tools wired:
 
-- **Phase 1 (6):** research + memo composition with Tavily/Perplexity + FMP.
-- **Phase 2 (4):** SEC EDGAR filings + valuation/peer comparison.
-- **Phase 3 (7):** Obsidian-compatible local vault — Bloomberg/FactSet xlsx
+- **Phase 1 (7):** research, follow-ups and memo composition with Tavily/Perplexity + FMP.
+- **Phase 2 (8):** SEC EDGAR filings and 10-K section extraction, peer
+  valuation, a per-share DCF with reverse DCF, batch DCF screening, and
+  vault-vs-FMP data checks.
+- **Phase 3 (17):** Obsidian-compatible local vault — Bloomberg/FactSet xlsx
   ingestion, parsed-JSON store, SQLite cross-company index, memo-to-vault
   round-trip. Existing Phase 1/2 tools auto-merge parsed vault fundamentals
   when present and `build_investment_memo` anchors valuation on the user's
-  own DCF rather than re-deriving from the web.
+  own DCF rather than re-deriving from the web. Also watchlist scorecard
+  import, saved peer sets, metric screens, a coverage dashboard and
+  memo-to-memo thesis reviews.
 
 ---
 

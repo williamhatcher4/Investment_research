@@ -191,3 +191,25 @@ def test_mcp_tool_import_vault_unset(monkeypatch, settings_tavily) -> None:
     out = vault_tools.import_watchlist_xlsx_export("/nonexistent.xlsx")
     assert out["ok"] is False
     assert out["error"] == "VAULT_NOT_CONFIGURED"
+
+
+def test_reimport_removes_rows_dropped_from_watchlist(
+    settings_with_vault, tmp_path: Path
+) -> None:
+    first = tmp_path / "first.xlsx"
+    _build_watchlist(first)
+    import_watchlist_xlsx(settings_with_vault, str(first))
+    assert load_company_watchlist(settings_with_vault, "AAPL") is not None
+
+    # Second workbook drops Apple.
+    wb = openpyxl.load_workbook(first)
+    wb.active.delete_rows(6)
+    second = tmp_path / "second.xlsx"
+    wb.save(second)
+    result = import_watchlist_xlsx(settings_with_vault, str(second))
+
+    assert load_company_watchlist(settings_with_vault, "AAPL") is None
+    assert any("AAPL" in p for p in result["removed_stale_paths"])
+    assert result["rows_resolved"] == 2
+    assert load_company_watchlist(settings_with_vault, "BF.B") is not None
+    assert load_company_watchlist(settings_with_vault, "ASML") is not None

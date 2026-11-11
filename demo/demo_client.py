@@ -79,6 +79,19 @@ async def main() -> None:
               f"${dcf['target_price']:.2f} · price ${dcf['current_share_price']:.2f} · "
               f"margin of safety {dcf['margin_of_safety'] * 100:.1f}%")
 
+        _rule(f"build_dcf(\"{TICKER}\")  · 10-year per-share DCF")
+        b = _payload(await session.call_tool("build_dcf", {"ticker": TICKER}))
+        inp = b["inputs"]
+        print(f"  base FCF/share ${b['base_fcf_per_share']:.2f} ({b['base_fcf_source']}) · "
+              f"growth {inp['growth_rate_yr1_5']:.0%} → {inp['growth_rate_yr6_10']:.1%} · "
+              f"discount {inp['discount_rate']:.0%} · terminal {inp['terminal_growth_rate']:.0%}")
+        print(f"  PV of 10y FCF ${b['pv_fcf_sum']:.2f} + PV of terminal "
+              f"${b['pv_terminal_value_per_share']:.2f} = intrinsic "
+              f"${b['intrinsic_value_per_share']:.2f} vs price ${b['current_price']:.2f} "
+              f"({b['upside_to_current']:+.1%})")
+        implied = b["reverse_dcf"]["implied_growth_rate_yr1_5"]
+        print(f"  reverse DCF: today's price implies {implied:.1%} FCF growth for years 1-5")
+
         _rule(f"get_sec_filings(\"{TICKER}\")")
         s = _payload(await session.call_tool("get_sec_filings", {"ticker": TICKER, "limit_per_form": 1}))
         for form, entries in s["filings"].items():

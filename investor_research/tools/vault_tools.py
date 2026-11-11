@@ -377,16 +377,29 @@ def screen_vault_companies(
     if not settings.enable_sqlite:
         return {"ok": False, "error": "SQLITE_DISABLED", "message": "ENABLE_SQLITE=false."}
     validated = [validate_ticker(t) for t in tickers] if tickers else None
-    rows = query_metric(
-        settings,
-        metric_name,
-        tickers=validated,
-        period=period,
-        min_value=min_value,
-        max_value=max_value,
-    )
     if period is None:
-        rows = _latest_metric_rows(rows)
+        # Screen on each company's latest value: pick the latest period first,
+        # then apply the thresholds (filtering first would let an old period
+        # that passes stand in for a current one that fails).
+        rows = _latest_metric_rows(
+            query_metric(settings, metric_name, tickers=validated)
+        )
+        rows = [
+            row
+            for row in rows
+            if row.get("value") is not None
+            and (min_value is None or row["value"] >= min_value)
+            and (max_value is None or row["value"] <= max_value)
+        ]
+    else:
+        rows = query_metric(
+            settings,
+            metric_name,
+            tickers=validated,
+            period=period,
+            min_value=min_value,
+            max_value=max_value,
+        )
     return {
         "ok": True,
         "as_of": _now(),
@@ -549,7 +562,7 @@ def write_peer_set_tool(
     validated = [validate_ticker(t) for t in tickers]
     if not name.strip():
         raise ValueError("name must be non-empty")
-    data = _read_peer_sets(settings)
+    data = _read_peer_sets(settings, strict=True)
     data[name] = {"tickers": validated, "description": description or ""}
     _write_peer_sets(settings, data)
     return {"ok": True, "as_of": _now(), "name": name, "tickers": validated}
@@ -588,15 +601,25 @@ def _peer_sets_path(settings: Settings) -> Path:
     return get_vault_root(settings) / "Watchlists" / "peer_sets.yml"
 
 
-def _read_peer_sets(settings: Settings) -> dict[str, Any]:
+def _read_peer_sets(settings: Settings, *, strict: bool = False) -> dict[str, Any]:
+    """Load peer sets. With ``strict``, a corrupt file raises instead of
+    reading as empty, so a following write cannot silently wipe it."""
     path = _peer_sets_path(settings)
     if not path.is_file():
         return {}
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError:
+    except yaml.YAMLError as exc:
+        if strict:
+            raise ValueError(
+                f"{path.name} could not be parsed ({exc}); fix or remove it before saving peer sets."
+            ) from exc
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        if strict:
+            raise ValueError(f"{path.name} must contain a mapping of peer-set names.")
+        return {}
+    return data
 
 
 def _write_peer_sets(settings: Settings, data: dict[str, Any]) -> None:

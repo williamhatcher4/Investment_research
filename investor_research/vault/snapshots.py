@@ -349,6 +349,9 @@ def import_watchlist_xlsx(
 
     index_path, dated_path = _write_watchlist_snapshot(settings, snapshot)
     fanned_out = _fan_out_per_company(settings, snapshot)
+    removed_stale = _remove_stale_watchlist_files(
+        settings, {r.normalized_ticker for r in snapshot.rows if r.normalized_ticker}
+    )
     peer_set_written = _update_hatcher_peer_set(settings, snapshot)
 
     rows_resolved = sum(1 for r in snapshot.rows if r.normalized_ticker)
@@ -370,6 +373,7 @@ def import_watchlist_xlsx(
         "index_path": str(index_path),
         "dated_path": str(dated_path),
         "fanned_out_paths": [str(p) for p in fanned_out],
+        "removed_stale_paths": [str(p) for p in removed_stale],
         "peer_set": peer_set_written,
         "rows_total": len(snapshot.rows),
         "rows_resolved": rows_resolved,
@@ -456,6 +460,23 @@ def _fan_out_per_company(
     return written
 
 
+def _remove_stale_watchlist_files(settings: Settings, keep: set[str]) -> list[Path]:
+    """Delete ``parsed/watchlist.json`` for companies no longer on the watchlist.
+
+    Otherwise a company dropped from the workbook keeps serving its old row
+    to ``build_dcf`` and ``load_company_watchlist``.
+    """
+    companies_dir = get_vault_root(settings) / "Companies"
+    if not companies_dir.is_dir():
+        return []
+    removed: list[Path] = []
+    for path in sorted(companies_dir.glob(f"*/parsed/{WATCHLIST_FILE}")):
+        if path.parent.parent.name not in keep:
+            path.unlink()
+            removed.append(path)
+    return removed
+
+
 def _update_hatcher_peer_set(
     settings: Settings, snapshot: WatchlistSnapshot
 ) -> dict[str, Any] | None:
@@ -471,7 +492,7 @@ def _update_hatcher_peer_set(
     # Local import keeps this module independent of the tool layer at module-load time.
     from investor_research.tools.vault_tools import _read_peer_sets, _write_peer_sets
 
-    data = _read_peer_sets(settings)
+    data = _read_peer_sets(settings, strict=True)
     description = (
         f"Coverage list parsed from "
         f"{Path(snapshot.source_file).name if snapshot.source_file else 'watchlist xlsx'}"
