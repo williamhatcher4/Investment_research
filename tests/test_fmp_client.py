@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import requests
 
-from investor_research.clients.fmp import FmpClient
+from investor_research.clients.fmp import FmpClient, reset_fmp_snapshot_cache
 
 
 def _fake_response(json_body, status_code: int = 200) -> MagicMock:
@@ -93,3 +93,19 @@ def test_to_prompt_block_renders_human_readable(settings_tavily_with_fmp):
     assert "Microsoft" in block
     assert "revenue=60000" in block
     assert "Peers (FMP): AAPL" in block
+
+
+def test_live_client_response_cache_reuses_endpoint_payload(settings_tavily_with_fmp):
+    reset_fmp_snapshot_cache()
+    session = MagicMock(spec=requests.Session)
+    session.get.return_value = _fake_response([{"companyName": "Microsoft"}])
+    client = FmpClient(settings_tavily_with_fmp, session=session)
+    client._use_cache = True
+
+    first = client._safe_get("/profile/MSFT", first=True)
+    second = client._safe_get("/profile/MSFT", first=True)
+
+    assert first == {"companyName": "Microsoft"}
+    assert second == {"companyName": "Microsoft"}
+    assert session.get.call_count == 1
+    reset_fmp_snapshot_cache()

@@ -56,9 +56,18 @@ def test_get_sec_filings_unknown_ticker_returns_error(monkeypatch, settings_tavi
     assert out["filings"] == {}
 
 
-def test_extract_10k_risks_combines_edgar_and_search(monkeypatch, settings_tavily):
+def test_extract_10k_risks_skips_search_when_sec_extraction_succeeds(monkeypatch, settings_tavily):
     fake_edgar = MagicMock()
     fake_edgar.latest_filing.return_value = _FILING
+    fake_edgar.fetch_filing_text.return_value = """
+    <html><body>
+    <h1>Item 1A. Risk Factors</h1><p>We face cybersecurity and macroeconomic risks.</p>
+    <h1>Item 1B. Unresolved Staff Comments</h1>
+    <h1>Item 7. Management's Discussion and Analysis</h1><p>Revenue grew.</p>
+    <h1>Item 7A. Quantitative and Qualitative Disclosures</h1><p>Currency risk.</p>
+    <h1>Item 8. Financial Statements</h1>
+    </body></html>
+    """
     monkeypatch.setattr(filings_module, "SecEdgarClient", lambda settings: fake_edgar)
 
     fake_provider = MagicMock()
@@ -74,9 +83,23 @@ def test_extract_10k_risks_combines_edgar_and_search(monkeypatch, settings_tavil
 
     out = filings_module.extract_10k_risks("MSFT")
     assert out["primary_filing"]["filing_date"] == "2024-07-30"
-    assert out["answer"] == "Cyber, currency, M&A integration."
-    assert out["sources"][0]["url"] == "https://sec.gov/foo"
+    assert out["filing_sections"]["item_1a"]["found"] is True
+    assert "cybersecurity" in out["filing_sections"]["item_1a"]["text"]
+    assert out["evidence_claims"][0]["quality_tier"] == "primary"
+    assert out["answer"] is None
+    assert out["search_skipped"] is True
+    fake_provider.search.assert_not_called()
+    assert out["sources"][0]["url"] == _FILING.filing_url
     assert out["edgar_error"] is None
+
+
+def test_extract_filing_sections_plain_text() -> None:
+    sections = filings_module.extract_filing_sections(
+        "Item 1A. Risk Factors\nRisk one.\nItem 1B. Other\nStop.",
+        {"item_1a": ("1A", ("1B",))},
+    )
+    assert sections["item_1a"]["found"] is True
+    assert "Risk one" in sections["item_1a"]["text"]
 
 
 def test_extract_10k_risks_handles_missing_10k(monkeypatch, settings_tavily):
@@ -94,6 +117,7 @@ def test_extract_10k_risks_handles_missing_10k(monkeypatch, settings_tavily):
     out = filings_module.extract_10k_risks("MSFT")
     assert out["primary_filing"] is None
     assert "No 10-K found" in out["notes"][0]
+    assert out["search_skipped"] is False
 
 
 def test_extract_10k_risks_handles_edgar_error(monkeypatch, settings_tavily):
@@ -112,3 +136,4 @@ def test_extract_10k_risks_handles_edgar_error(monkeypatch, settings_tavily):
     assert out["primary_filing"] is None
     assert out["edgar_error"] == "EDGAR 500"
     assert out["answer"] == "fallback"  # search still ran
+    assert out["search_skipped"] is False

@@ -25,6 +25,7 @@ from tenacity import (
 from investor_research.config import Settings
 from investor_research.models import ResearchEvidence, ResearchResult, Source
 from investor_research.prompts.system import SYSTEM_PROMPT
+from investor_research.source_quality import enrich_source
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class PerplexityClient:
             api_key=settings.perplexity_api_key,
             base_url=PERPLEXITY_BASE_URL,
             timeout=settings.request_timeout_seconds,
+            max_retries=0,
         )
 
     # ---- provider interface --------------------------------------------
@@ -216,16 +218,18 @@ def _extract_sources(raw: Any) -> list[Source]:
     for entry in raw_citations:
         if isinstance(entry, str):
             url = entry
-            seen.setdefault(url, Source(url=url))
+            seen.setdefault(url, enrich_source(Source(url=url)))
         elif isinstance(entry, dict):
             url = entry.get("url")
             if url:
                 seen.setdefault(
                     url,
-                    Source(
-                        url=url,
-                        title=entry.get("title"),
-                        publisher=entry.get("publisher") or entry.get("source"),
+                    enrich_source(
+                        Source(
+                            url=url,
+                            title=entry.get("title"),
+                            publisher=entry.get("publisher") or entry.get("source"),
+                        )
                     ),
                 )
 
@@ -234,10 +238,12 @@ def _extract_sources(raw: Any) -> list[Source]:
         if isinstance(entry, dict):
             url = entry.get("url")
             if url and url not in seen:
-                seen[url] = Source(
-                    url=url,
-                    title=entry.get("title"),
-                    publisher=entry.get("publisher") or entry.get("source"),
+                seen[url] = enrich_source(
+                    Source(
+                        url=url,
+                        title=entry.get("title"),
+                        publisher=entry.get("publisher") or entry.get("source"),
+                    )
                 )
 
     return list(seen.values())

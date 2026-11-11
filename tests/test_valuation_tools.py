@@ -7,9 +7,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from investor_research.clients.fmp import FmpSnapshot
+from investor_research.models import FundamentalsSnapshot
 from investor_research.models import ResearchEvidence, ResearchResult, Source
 from investor_research.tools import valuation as v
 from investor_research.tools.research import InvalidTickerError
+from investor_research.vault.paths import create_company_folder
+from investor_research.vault.snapshots import write_parsed_json
 
 
 def _snap(ticker: str, *, revenue=100.0, gross=40.0, op=25.0, net=15.0, pe=30.0, ev_ebitda=20.0, peers=None) -> FmpSnapshot:
@@ -57,7 +60,7 @@ def test_compare_peers_propagates_invalid_ticker(monkeypatch, settings_tavily):
 
 def test_compare_peers_builds_rows(monkeypatch, settings_tavily):
     fake_fmp = MagicMock()
-    fake_fmp.fetch_snapshot.side_effect = lambda t: _snap(t)
+    fake_fmp.fetch_snapshot.side_effect = lambda t, **kwargs: _snap(t)
     monkeypatch.setattr(v, "FmpClient", lambda settings: fake_fmp)
 
     fake_provider = MagicMock()
@@ -82,7 +85,7 @@ def test_valuation_snapshot_computes_peer_averages(monkeypatch, settings_tavily)
     peers = {"AAPL": _snap("AAPL", pe=28.0, ev_ebitda=18.0), "GOOGL": _snap("GOOGL", pe=22.0, ev_ebitda=14.0)}
 
     fake_fmp = MagicMock()
-    fake_fmp.fetch_snapshot.side_effect = lambda t: subject if t == "MSFT" else peers[t]
+    fake_fmp.fetch_snapshot.side_effect = lambda t, **kwargs: subject if t == "MSFT" else peers[t]
     monkeypatch.setattr(v, "FmpClient", lambda settings: fake_fmp)
 
     fake_provider = MagicMock()
@@ -114,3 +117,74 @@ def test_valuation_snapshot_handles_no_peers(monkeypatch, settings_tavily):
     assert out["peers"] == []
     assert out["peer_averages"] == {}
     assert any("No FMP peer list" in n for n in out["notes"])
+
+
+def test_valuation_snapshot_uses_curated_peer_set(monkeypatch, settings_with_vault):
+    create_company_folder(settings_with_vault, "MSFT")
+    from investor_research.tools import vault_tools
+
+    monkeypatch.setattr(vault_tools, "get_settings", lambda: settings_with_vault)
+    vault_tools.write_peer_set_tool("software", ["AAPL", "GOOGL"])
+
+    subject = _snap("MSFT", pe=35.0, peers=["ORCL"])
+    peers = {"AAPL": _snap("AAPL", pe=28.0), "GOOGL": _snap("GOOGL", pe=22.0)}
+    fake_fmp = MagicMock()
+    fake_fmp.fetch_snapshot.side_effect = lambda t, **kwargs: subject if t == "MSFT" else peers[t]
+    monkeypatch.setattr(v, "FmpClient", lambda settings: fake_fmp)
+
+    fake_provider = MagicMock()
+    fake_provider.search.return_value = _evidence()
+    monkeypatch.setattr(v, "make_research_provider", lambda s: fake_provider)
+    monkeypatch.setattr(v, "get_settings", lambda: settings_with_vault)
+
+    out = v.valuation_snapshot("MSFT", peer_set="software")
+    assert [row["ticker"] for row in out["peers"]] == ["AAPL", "GOOGL"]
+    assert out["peer_set"] == "software"
+
+
+def test_dcf_scenario_analysis_from_vault(monkeypatch, settings_with_vault):
+    create_company_folder(settings_with_vault, "NKE")
+    write_parsed_json(
+        settings_with_vault,
+        FundamentalsSnapshot(
+            ticker="NKE",
+            periods=["FY2025"],
+            dcf={
+                "target_price": 120.0,
+                "intrinsic_value_per_share": 100.0,
+                "current_share_price": 80.0,
+                "fcf_growth_projection_10yr": 0.06,
+            },
+        ),
+    )
+    monkeypatch.setattr(v, "get_settings", lambda: settings_with_vault)
+
+    out = v.dcf_scenario_analysis("NKE")
+    assert out["ok"] is True
+    assert out["scenarios"][1]["scenario"] == "base"
+    assert out["scenarios"][1]["upside_to_current"] == pytest.approx(0.5)
+    assert out["reverse_dcf"]["available"] is True
+
+
+def test_data_cross_check_flags_large_difference(monkeypatch, settings_with_vault):
+    create_company_folder(settings_with_vault, "NKE")
+    write_parsed_json(
+        settings_with_vault,
+        FundamentalsSnapshot(
+            ticker="NKE",
+            periods=["FY2025"],
+            units="millions",
+            series={"revenue": [100.0], "net_income": [10.0]},
+        ),
+    )
+    fake_fmp = MagicMock()
+    fake_fmp.fetch_snapshot.return_value = FmpSnapshot(
+        ticker="NKE",
+        income_statement=[{"revenue": 80_000_000.0, "netIncome": 10_000_000.0}],
+    )
+    monkeypatch.setattr(v, "FmpClient", lambda settings: fake_fmp)
+    monkeypatch.setattr(v, "get_settings", lambda: settings_with_vault)
+
+    out = v.data_cross_check("NKE")
+    revenue = next(row for row in out["rows"] if row["metric"] == "revenue")
+    assert revenue["flag"] is True

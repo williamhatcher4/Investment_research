@@ -11,6 +11,9 @@ fall back to Perplexity for those fields.
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +32,10 @@ from investor_research.models import Source
 logger = logging.getLogger(__name__)
 
 FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
+_SNAPSHOT_CACHE_TTL_SECONDS = 600.0
+_SNAPSHOT_CACHE_LOCK = threading.Lock()
+_SNAPSHOT_CACHE_LOCKS: dict[tuple[Any, ...], threading.Lock] = {}
+_SNAPSHOT_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
 
 
 class FmpError(RuntimeError):
@@ -46,6 +53,7 @@ class FmpSnapshot:
     balance_sheet: list[dict[str, Any]] | None = None
     key_metrics_ttm: dict[str, Any] | None = None
     peers: list[str] | None = None
+    cash_flow_statement: list[dict[str, Any]] | None = None
 
     def to_prompt_block(self) -> str:
         """Render a compact, deterministic summary for use inside a prompt."""
@@ -90,6 +98,14 @@ class FmpSnapshot:
                 f"freeCashFlowYield={m.get('freeCashFlowYieldTTM')} | "
                 f"roeTTM={m.get('roeTTM')} | netDebtToEbitda={m.get('netDebtToEBITDATTM')}"
             )
+        if self.cash_flow_statement:
+            cf = self.cash_flow_statement[0]
+            lines.append(
+                f"CashFlow {cf.get('date')} ({cf.get('period')}): "
+                f"operatingCF={cf.get('operatingCashFlow')} | "
+                f"capex={cf.get('capitalExpenditure')} | "
+                f"freeCashFlow={cf.get('freeCashFlow')}"
+            )
         if self.peers:
             lines.append(f"Peers (FMP): {', '.join(self.peers)}")
         return "\n".join(lines)
@@ -104,6 +120,7 @@ class FmpSnapshot:
                 self.balance_sheet,
                 self.key_metrics_ttm,
                 self.peers,
+                self.cash_flow_statement,
             )
         )
 
@@ -114,6 +131,10 @@ class FmpSnapshot:
             url=f"https://financialmodelingprep.com/financial-statements/{self.ticker}",
             title=f"FMP structured financials — {self.ticker}",
             publisher="Financial Modeling Prep",
+            source_type="structured_data_provider",
+            quality_tier="standard",
+            quality_score=0.65,
+            quality_notes="Third-party structured financial data; cross-check against filings or vault data.",
         )
 
 
@@ -125,39 +146,62 @@ class FmpClient:
     ) -> None:
         self._settings = settings
         self._session = session or requests.Session()
+        self._use_cache = session is None
 
     @property
     def enabled(self) -> bool:
         return bool(self._settings.fmp_api_key)
 
-    def fetch_snapshot(self, ticker: str) -> FmpSnapshot:
+    def fetch_snapshot(
+        self,
+        ticker: str,
+        *,
+        include_profile: bool = True,
+        include_quote: bool = True,
+        include_income: bool = True,
+        include_balance: bool = True,
+        include_metrics: bool = True,
+        include_peers: bool = True,
+        include_cashflow: bool = False,
+    ) -> FmpSnapshot:
         """Fetch all Phase 1 endpoints for ``ticker``.
 
         Returns an empty snapshot if FMP is disabled (no key). Individual
         endpoint failures degrade gracefully — we keep whatever fields we
         managed to retrieve.
         """
+        ticker = ticker.upper()
         snapshot = FmpSnapshot(ticker=ticker)
         if not self.enabled:
             return snapshot
 
-        snapshot.profile = self._safe_get(f"/profile/{ticker}", first=True)
-        snapshot.quote = self._safe_get(f"/quote/{ticker}", first=True)
-        snapshot.income_statement = self._safe_get(
-            f"/income-statement/{ticker}", params={"limit": 4}
-        )
-        snapshot.balance_sheet = self._safe_get(
-            f"/balance-sheet-statement/{ticker}", params={"limit": 1}
-        )
-        snapshot.key_metrics_ttm = self._safe_get(
-            f"/key-metrics-ttm/{ticker}", first=True
-        )
-        peers_payload = self._safe_get(
-            "/stock_peers", params={"symbol": ticker}, first=True
-        )
-        if peers_payload and isinstance(peers_payload, dict):
-            peers = peers_payload.get("peersList") or []
-            snapshot.peers = [p for p in peers if isinstance(p, str)]
+        if include_profile:
+            snapshot.profile = self._safe_get(f"/profile/{ticker}", first=True)
+        if include_quote:
+            snapshot.quote = self._safe_get(f"/quote/{ticker}", first=True)
+        if include_income:
+            snapshot.income_statement = self._safe_get(
+                f"/income-statement/{ticker}", params={"limit": 4}
+            )
+        if include_balance:
+            snapshot.balance_sheet = self._safe_get(
+                f"/balance-sheet-statement/{ticker}", params={"limit": 1}
+            )
+        if include_metrics:
+            snapshot.key_metrics_ttm = self._safe_get(
+                f"/key-metrics-ttm/{ticker}", first=True
+            )
+        if include_peers:
+            peers_payload = self._safe_get(
+                "/stock_peers", params={"symbol": ticker}, first=True
+            )
+            if peers_payload and isinstance(peers_payload, dict):
+                peers = peers_payload.get("peersList") or []
+                snapshot.peers = [p for p in peers if isinstance(p, str)]
+        if include_cashflow:
+            snapshot.cash_flow_statement = self._safe_get(
+                f"/cash-flow-statement/{ticker}", params={"limit": 3}
+            )
         return snapshot
 
     # ---- internals -----------------------------------------------------
@@ -188,6 +232,37 @@ class FmpClient:
         params = dict(params or {})
         params["apikey"] = self._settings.fmp_api_key
         url = f"{FMP_BASE_URL}{path}"
+        cache_key = (
+            self._settings.fmp_api_key,
+            url,
+            tuple(sorted((k, str(v)) for k, v in params.items())),
+        )
+        if self._use_cache:
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                data = cached
+                if first and isinstance(data, list):
+                    return data[0] if data else None
+                return data
+            lock = _cache_lock_for(cache_key)
+            with lock:
+                cached = _cache_get(cache_key)
+                if cached is not None:
+                    data = cached
+                    if first and isinstance(data, list):
+                        return data[0] if data else None
+                    return data
+                try:
+                    data = _retry_get(
+                        self._session, url, params, self._settings.request_timeout_seconds
+                    )
+                except RetryError as exc:
+                    cause = exc.last_attempt.exception() if exc.last_attempt else exc
+                    raise FmpError(f"GET {path} failed: {cause}") from cause
+                _cache_set(cache_key, data)
+                if first and isinstance(data, list):
+                    return data[0] if data else None
+                return data
         try:
             data = _retry_get(self._session, url, params, self._settings.request_timeout_seconds)
         except RetryError as exc:
@@ -221,3 +296,37 @@ def _retry_get(
     if response.status_code >= 400:
         raise FmpError(f"FMP {response.status_code}: {response.text[:200]}")
     return response.json()
+
+
+def _cache_lock_for(key: tuple[Any, ...]) -> threading.Lock:
+    with _SNAPSHOT_CACHE_LOCK:
+        lock = _SNAPSHOT_CACHE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _SNAPSHOT_CACHE_LOCKS[key] = lock
+        return lock
+
+
+def _cache_get(key: tuple[Any, ...]) -> Any | None:
+    now = time.monotonic()
+    with _SNAPSHOT_CACHE_LOCK:
+        cached = _SNAPSHOT_CACHE.get(key)
+        if cached is None:
+            return None
+        created_at, value = cached
+        if now - created_at > _SNAPSHOT_CACHE_TTL_SECONDS:
+            _SNAPSHOT_CACHE.pop(key, None)
+            return None
+        return deepcopy(value)
+
+
+def _cache_set(key: tuple[Any, ...], value: Any) -> None:
+    with _SNAPSHOT_CACHE_LOCK:
+        _SNAPSHOT_CACHE[key] = (time.monotonic(), deepcopy(value))
+
+
+def reset_fmp_snapshot_cache() -> None:
+    """Test helper: clear the in-process FMP response cache."""
+    with _SNAPSHOT_CACHE_LOCK:
+        _SNAPSHOT_CACHE.clear()
+        _SNAPSHOT_CACHE_LOCKS.clear()

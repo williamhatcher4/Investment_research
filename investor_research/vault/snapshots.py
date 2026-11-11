@@ -20,13 +20,20 @@ from pathlib import Path
 from typing import Any
 
 from investor_research.config import Settings
-from investor_research.models import FundamentalsSnapshot
+from investor_research.models import FundamentalsSnapshot, WatchlistSnapshot
 from investor_research.tickers import validate_ticker
 from investor_research.vault.paths import (
     create_company_folder,
     get_company_path,
     get_latest_xlsx_export,
+    get_vault_root,
 )
+from investor_research.vault.ticker_aliases import (
+    auto_seed_aliases,
+    resolve as resolve_alias,
+    unresolved as unresolved_aliases,
+)
+from investor_research.vault.watchlist_parser import parse_watchlist_workbook
 from investor_research.vault.xlsx_parser import parse_workbook, sha256_of
 
 logger = logging.getLogger(__name__)
@@ -35,6 +42,13 @@ logger = logging.getLogger(__name__)
 FINANCIALS_FILE = "financials.json"
 VALUATION_FILE = "valuation.json"
 METADATA_FILE = "metadata.json"
+WATCHLIST_FILE = "watchlist.json"
+
+# Layout under {VAULT_ROOT}/Watchlists/ for the Hatcher multi-company workbook.
+WATCHLIST_INDEX_FILENAME = "hatcher_workbook_latest.json"
+WATCHLIST_HISTORY_DIRNAME = "history"
+WATCHLIST_RAW_EXPORTS_DIRNAME = "raw_exports"
+WATCHLIST_PEER_SET_NAME = "hatcher_coverage"
 
 
 def _parsed_dir(settings: Settings, ticker: str) -> Path:
@@ -266,3 +280,204 @@ def _find_export_by_hash(exports_dir: Path, sha256: str) -> Path | None:
         if sha256_of(path) == sha256:
             return path
     return None
+
+
+# ---- Watchlist (multi-company scorecard) snapshots ---------------------
+
+
+def _watchlists_dir(settings: Settings) -> Path:
+    return get_vault_root(settings) / "Watchlists"
+
+
+def import_watchlist_xlsx(
+    settings: Settings,
+    file_path: Path | str,
+    *,
+    copy_to_vault: bool = True,
+) -> dict[str, Any]:
+    """Import a Hatcher-style watchlist workbook end-to-end.
+
+    Steps:
+      1. SHA-256 the source and copy it under ``Watchlists/raw_exports/`` (hash-deduped).
+      2. Parse the workbook to a ``WatchlistSnapshot``.
+      3. Auto-seed US-suffix Bloomberg tickers in ``Watchlists/ticker_aliases.yml``
+         and resolve every row's ``normalized_ticker`` via the alias map.
+      4. Write the JSON snapshot to ``Watchlists/hatcher_workbook_latest.json``
+         plus a dated audit copy under ``Watchlists/history/``.
+      5. For each resolved ticker, ensure the company folder exists and
+         write ``Companies/{TICKER}/parsed/watchlist.json``.
+      6. Update the peer set ``hatcher_coverage`` with the resolved tickers.
+    """
+    src = Path(file_path).expanduser().resolve()
+    if not src.is_file():
+        raise FileNotFoundError(f"watchlist xlsx not found: {src}")
+    src_hash = sha256_of(src)
+
+    raw_exports = _watchlists_dir(settings) / WATCHLIST_RAW_EXPORTS_DIRNAME
+    raw_exports.mkdir(parents=True, exist_ok=True)
+
+    deduped = False
+    if copy_to_vault:
+        existing = _find_export_by_hash(raw_exports, src_hash)
+        if existing is not None:
+            target = existing
+            deduped = True
+        else:
+            date_str = datetime.now(timezone.utc).date().isoformat()
+            target = raw_exports / f"{date_str}_{src.stem}.xlsx"
+            counter = 1
+            while target.exists():
+                target = raw_exports / f"{date_str}_{src.stem}_{counter}.xlsx"
+                counter += 1
+            shutil.copy2(src, target)
+    else:
+        target = src
+
+    snapshot = parse_watchlist_workbook(target)
+
+    # Resolve tickers via the alias YAML (auto-seeding US-suffix rows first).
+    bb_tickers = [row.bloomberg_ticker for row in snapshot.rows]
+    aliases, added = auto_seed_aliases(settings, bb_tickers)
+    for row in snapshot.rows:
+        resolved = resolve_alias(aliases, row.bloomberg_ticker)
+        if resolved is None:
+            row.warnings.append(
+                f"no alias for Bloomberg ticker {row.bloomberg_ticker!r}; "
+                "add it to Watchlists/ticker_aliases.yml"
+            )
+        row.normalized_ticker = resolved
+
+    index_path, dated_path = _write_watchlist_snapshot(settings, snapshot)
+    fanned_out = _fan_out_per_company(settings, snapshot)
+    peer_set_written = _update_hatcher_peer_set(settings, snapshot)
+
+    rows_resolved = sum(1 for r in snapshot.rows if r.normalized_ticker)
+    unresolved_tickers = unresolved_aliases(aliases, bb_tickers)
+
+    summary = {
+        "rows_total": len(snapshot.rows),
+        "rows_resolved": rows_resolved,
+        "rows_unresolved": len(unresolved_tickers),
+        "metrics_per_row": len(snapshot.rows[0].metrics) if snapshot.rows else 0,
+        "aliases_seeded": added,
+        "snapshot_date": snapshot.snapshot_date,
+        "sheet_name": snapshot.sheet_name,
+    }
+    return {
+        "xlsx_path": str(target),
+        "source_sha256": src_hash,
+        "deduped": deduped,
+        "index_path": str(index_path),
+        "dated_path": str(dated_path),
+        "fanned_out_paths": [str(p) for p in fanned_out],
+        "peer_set": peer_set_written,
+        "rows_total": len(snapshot.rows),
+        "rows_resolved": rows_resolved,
+        "rows_unresolved": len(unresolved_tickers),
+        "unresolved_tickers": unresolved_tickers,
+        "summary": summary,
+    }
+
+
+def load_watchlist_snapshot(settings: Settings) -> WatchlistSnapshot | None:
+    """Load ``Watchlists/hatcher_workbook_latest.json`` if it exists."""
+    path = _watchlists_dir(settings) / WATCHLIST_INDEX_FILENAME
+    if not path.is_file():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return WatchlistSnapshot.model_validate(payload)
+
+
+def load_company_watchlist(settings: Settings, ticker: str) -> dict[str, Any] | None:
+    """Load ``Companies/{TICKER}/parsed/watchlist.json`` if it exists."""
+    ticker = validate_ticker(ticker)
+    path = _parsed_dir(settings, ticker) / WATCHLIST_FILE
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_watchlist_snapshot(
+    settings: Settings, snapshot: WatchlistSnapshot
+) -> tuple[Path, Path]:
+    """Write the canonical + dated copies of the watchlist snapshot JSON."""
+    base = _watchlists_dir(settings)
+    history = base / WATCHLIST_HISTORY_DIRNAME
+    base.mkdir(parents=True, exist_ok=True)
+    history.mkdir(parents=True, exist_ok=True)
+
+    index_path = base / WATCHLIST_INDEX_FILENAME
+    date_token = snapshot.snapshot_date or datetime.now(timezone.utc).date().isoformat()
+    dated_path = history / f"hatcher_workbook_{date_token}.json"
+
+    payload = snapshot.model_dump(mode="json")
+    text = json.dumps(payload, indent=2, default=str)
+    index_path.write_text(text, encoding="utf-8")
+    dated_path.write_text(text, encoding="utf-8")
+    logger.info(
+        "vault.watchlist_written",
+        extra={
+            "index_path": str(index_path),
+            "dated_path": str(dated_path),
+            "rows": len(snapshot.rows),
+        },
+    )
+    return index_path, dated_path
+
+
+def _fan_out_per_company(
+    settings: Settings, snapshot: WatchlistSnapshot
+) -> list[Path]:
+    """Write each resolved row to its company's ``parsed/watchlist.json``.
+
+    Returns the list of files written. Unresolved rows are skipped.
+    """
+    written: list[Path] = []
+    parsed_at_iso = snapshot.parsed_at.isoformat()
+    for row in snapshot.rows:
+        ticker = row.normalized_ticker
+        if not ticker:
+            continue
+        create_company_folder(
+            settings, ticker, company_name=row.long_name, sector=row.sector
+        )
+        parsed_dir = _parsed_dir(settings, ticker)
+        parsed_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            **row.model_dump(mode="json"),
+            "source_file": snapshot.source_file,
+            "source_sha256": snapshot.source_sha256,
+            "source_workbook_date": snapshot.snapshot_date,
+            "parsed_at": parsed_at_iso,
+        }
+        target = parsed_dir / WATCHLIST_FILE
+        target.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        written.append(target)
+    return written
+
+
+def _update_hatcher_peer_set(
+    settings: Settings, snapshot: WatchlistSnapshot
+) -> dict[str, Any] | None:
+    """Write/update the ``hatcher_coverage`` peer set with resolved tickers.
+
+    Uses the same on-disk format as ``investor_research.tools.vault_tools._write_peer_sets``
+    so existing peer-set tools see this entry.
+    """
+    tickers = [r.normalized_ticker for r in snapshot.rows if r.normalized_ticker]
+    if not tickers:
+        return None
+
+    # Local import keeps this module independent of the tool layer at module-load time.
+    from investor_research.tools.vault_tools import _read_peer_sets, _write_peer_sets
+
+    data = _read_peer_sets(settings)
+    description = (
+        f"Coverage list parsed from "
+        f"{Path(snapshot.source_file).name if snapshot.source_file else 'watchlist xlsx'}"
+        f" ({snapshot.snapshot_date or 'undated'})"
+    )
+    entry = {"tickers": tickers, "description": description}
+    data[WATCHLIST_PEER_SET_NAME] = entry
+    _write_peer_sets(settings, data)
+    return {"name": WATCHLIST_PEER_SET_NAME, **entry}

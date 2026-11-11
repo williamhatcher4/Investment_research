@@ -70,7 +70,7 @@ class SecEdgarClient:
         self._session.headers.update(
             {
                 "User-Agent": settings.sec_edgar_user_agent,
-                "Accept": "application/json",
+                "Accept": "application/json, text/html;q=0.9,*/*;q=0.8",
             }
         )
 
@@ -143,6 +143,16 @@ class SecEdgarClient:
         entry = entries[0]
         return FilingEntry(**entry)
 
+    def fetch_filing_text(self, filing_url: str) -> str:
+        """Fetch a primary filing document as text/HTML from EDGAR."""
+        try:
+            return _retry_get_text(
+                self._session, filing_url, self._settings.request_timeout_seconds
+            )
+        except RetryError as exc:
+            cause = exc.last_attempt.exception() if exc.last_attempt else exc
+            raise SecEdgarError(f"GET {filing_url} failed: {cause}") from cause
+
     # ---- internals -----------------------------------------------------
 
     def _ensure_ticker_map(self) -> dict[str, str]:
@@ -198,6 +208,23 @@ def _retry_get(session: requests.Session, url: str, timeout: float) -> Any:
     if response.status_code >= 400:
         raise SecEdgarError(f"EDGAR {response.status_code}: {response.text[:200]}")
     return response.json()
+
+
+@retry(
+    reraise=False,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception_type(_RETRYABLE),
+)
+def _retry_get_text(session: requests.Session, url: str, timeout: float) -> str:
+    response = session.get(url, timeout=timeout)
+    if response.status_code == 429 or 500 <= response.status_code < 600:
+        raise requests.ConnectionError(
+            f"SEC EDGAR transient {response.status_code}: {response.text[:120]}"
+        )
+    if response.status_code >= 400:
+        raise SecEdgarError(f"EDGAR {response.status_code}: {response.text[:200]}")
+    return response.text
 
 
 def reset_ticker_map_cache() -> None:
